@@ -1,0 +1,8 @@
+{
+  "_note": "Bridge lines, exactly as they appear in a torrc after the word Bridge. Snowflake's line is a public constant and belongs here; obfs4 and webtunnel lines are handed out per user and get fetched at runtime instead.",
+  "_todo": "The snowflake line is not filled in. It carries a bridge fingerprint that has to be copied from the current Tor Browser defaults rather than typed from memory: a wrong fingerprint fails silently and looks exactly like being blocked, which is the worst possible way for this app to break.",
+  "snowflake": [],
+  "webtunnel": [],
+  "obfs4": [],
+  "dnstt": []
+}

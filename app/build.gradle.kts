@@ -55,4 +55,10 @@ dependencies {
     // mobile by the Tor community. BSD licensed, so nothing here has to change
     // licence to use it.
     implementation("com.netzarchitekten:IPtProxy:5.5.1")
+
+    // Tor itself, as a native library rather than a gomobile one, so it does
+    // not clash with IPtProxy. Also BSD licensed.
+    implementation("info.guardianproject:tor-android:0.4.8.21.1")
+    implementation("info.guardianproject:jtorctl:0.4.5.7")
+    implementation("androidx.localbroadcastmanager:localbroadcastmanager:1.1.0")
 }

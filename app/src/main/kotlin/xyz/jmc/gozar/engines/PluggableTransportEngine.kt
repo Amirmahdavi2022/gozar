@@ -97,7 +97,7 @@ fun defaultEngines(
     tor: TorDriver,
     bridges: (String) -> List<String>,
 ): List<Engine> = listOf(
-    PluggableTransportEngine(Transport.SNOWFLAKE, Shape.WEBRTC, controller, tor) { emptyList() },
+    PluggableTransportEngine(Transport.SNOWFLAKE, Shape.WEBRTC, controller, tor) { bridges(Transport.SNOWFLAKE) },
     PluggableTransportEngine(Transport.WEBTUNNEL, Shape.HTTPS, controller, tor) { bridges(Transport.WEBTUNNEL) },
     PluggableTransportEngine(Transport.OBFS4, Shape.RANDOM, controller, tor) { bridges(Transport.OBFS4) },
     PluggableTransportEngine(Transport.DNSTT, Shape.DNS, controller, tor) { bridges(Transport.DNSTT) },
