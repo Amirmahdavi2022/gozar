@@ -31,7 +31,7 @@ jobs:
         id: build
         run: |
           set -o pipefail
-          gradle --no-daemon --stacktrace :core:build 2>&1 | tee build.log
+          gradle --no-daemon --stacktrace :core:build :app:assembleDebug 2>&1 | tee build.log
 
       # Action logs live on storage that is awkward to read from anywhere but a
       # browser. On a failure the interesting part gets filed as an issue, so
