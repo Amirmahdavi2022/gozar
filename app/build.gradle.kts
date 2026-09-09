@@ -16,6 +16,18 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
+
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+        }
+    }
+
+    // hev-socks5-tunnel ships an ndk-build makefile, so AGP drives ndk-build
+    // rather than CMake here.
+    externalNativeBuild {
+        ndkBuild {
+            path = file("src/main/jni/Android.mk")
+        }
     }
 
     buildTypes {
