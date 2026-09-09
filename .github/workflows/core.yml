@@ -38,6 +38,25 @@ jobs:
       # Action logs live on storage that is awkward to read from anywhere but a
       # browser. On a failure the interesting part gets filed as an issue, so
       # the error is readable through the API like everything else.
+      # A green build does not prove ndk-build ran. This looks inside the apk
+      # and fails if the native tunnel is not actually in there.
+      - name: Check the native library landed
+        run: |
+          apk=$(find app/build/outputs/apk/debug -name '*.apk' | head -1)
+          echo "apk: $apk"
+          unzip -l "$apk" | grep -E 'lib/.*\.so' || true
+          if ! unzip -l "$apk" | grep -q 'libhev-socks5-tunnel.so'; then
+            echo "native tunnel missing from the apk"
+            exit 1
+          fi
+
+      - name: Keep the apk
+        uses: actions/upload-artifact@v4
+        with:
+          name: gozar-debug
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+
       - name: File the failure
         if: failure()
         env:
