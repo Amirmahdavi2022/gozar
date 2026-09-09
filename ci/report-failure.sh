@@ -13,7 +13,11 @@ body=$(mktemp)
   echo "Commit \`${short}\` failed to build."
   echo
   echo '```'
-  grep -E '^e: |FAILURE|What went wrong|Caused by|^> ' build.log 2>/dev/null | head -40
+  # Task lines are noise and there are hundreds of them, so they get dropped
+  # before anything else. Whatever is left is the actual reason.
+  grep -vE '^> Task ' build.log 2>/dev/null \
+    | grep -E '^e: |^w: |FAILURE|What went wrong|Caused by|Execution failed|Could not|error:' \
+    | head -40
   echo '```'
 } > "$body"
 
