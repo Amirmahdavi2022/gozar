@@ -95,9 +95,13 @@ class Scoreboard(
             compareBy(
                 { engine ->
                     val rec = scores[engine.name]
+                    // lastGoodAt is 0 for an engine that has only ever failed.
+                    // Without the first check that zero counts as "recent"
+                    // whenever the freshness cutoff is negative, and the worst
+                    // engine on the network gets tried first every time.
                     when {
-                        rec != null && rec.lastGoodAt > fresh -> 0
                         rec == null -> 1
+                        rec.lastGoodAt > 0 && rec.lastGoodAt > fresh -> 0
                         else -> 2
                     }
                 },

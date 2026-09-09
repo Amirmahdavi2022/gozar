@@ -1,6 +1,5 @@
 package xyz.jmc.gozar.core
 
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -45,7 +44,7 @@ class RacerTest {
         val alive = FakeEngine("alive", Shape.HTTPS, startDelayMs = 3_000)
         val probe = FakeProbe(listOf(dead, alive))
 
-        val racer = Racer(listOf(dead, alive), Scoreboard(MemoryStore()), probe, CoroutineScope(coroutineContext))
+        val racer = Racer(listOf(dead, alive), Scoreboard(MemoryStore()), probe, backgroundScope)
         val session = racer.connect(NetworkId.UNKNOWN)
 
         assertNotNull(session)
@@ -61,7 +60,7 @@ class RacerTest {
         val sameShape = FakeEngine("same", Shape.WEBRTC, startDelayMs = 2_000)
         val probe = FakeProbe(listOf(first, sameShape))
 
-        val racer = Racer(listOf(first, sameShape), Scoreboard(MemoryStore()), probe, CoroutineScope(coroutineContext))
+        val racer = Racer(listOf(first, sameShape), Scoreboard(MemoryStore()), probe, backgroundScope)
         racer.connect(NetworkId.UNKNOWN)
 
         assertTrue(sameShape.stopped, "same-shape runner-up should not be held warm")
@@ -72,7 +71,7 @@ class RacerTest {
         val a = FakeEngine("a", Shape.WEBRTC, failToStart = true)
         val b = FakeEngine("b", Shape.HTTPS, carriesTraffic = false)
 
-        val racer = Racer(listOf(a, b), Scoreboard(MemoryStore()), FakeProbe(listOf(a, b)), CoroutineScope(coroutineContext))
+        val racer = Racer(listOf(a, b), Scoreboard(MemoryStore()), FakeProbe(listOf(a, b)), backgroundScope)
         assertNull(racer.connect(NetworkId.UNKNOWN))
     }
 }
