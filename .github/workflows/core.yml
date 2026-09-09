@@ -40,27 +40,4 @@ jobs:
         if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          {
-            echo "Commit \`${GITHUB_SHA:0:7}\` failed to build."
-            echo
-            echo '```'
-            grep -E "^e: |FAILURE|What went wrong|Caused by|> " build.log | head -40 || tail -40 build.log
-            echo '```'
-            echo
-            echo 'Test failures:'
-            echo '```'
-            for f in core/build/test-results/test/*.xml; do
-              [ -f "$f" ] || continue
-              python3 - "$f" <<'EOP'
-import sys, xml.etree.ElementTree as ET
-root = ET.parse(sys.argv[1]).getroot()
-for case in root.iter('testcase'):
-    for bad in list(case.iter('failure')) + list(case.iter('error')):
-        print(case.get('classname'), '>', case.get('name'))
-        print('   ', (bad.get('message') or '').strip()[:400])
-EOP
-            done | head -60
-            echo '```'
-          } > body.md
-          gh issue create --title "build failed on ${GITHUB_SHA:0:7}" --body-file body.md --label "" || true
+        run: bash ci/report-failure.sh
