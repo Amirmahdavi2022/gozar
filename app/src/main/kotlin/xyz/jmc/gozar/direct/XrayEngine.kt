@@ -71,33 +71,14 @@ internal class XrayEngine(
         log(if (shaped) "shaping proxy is up" else "shaping proxy unavailable, plain route only")
         val modes = if (shaped) intArrayOf(DialMode.DIRECT, DialMode.SPOOF) else intArrayOf(DialMode.DIRECT)
 
-        val winner = search(binary, modes) ?: run {
+        val live = search(binary, modes) ?: run {
             spoof.stop()
             error("nothing in the pool answered")
         }
 
-        // The round only filters. The connection the user's traffic rides is established here, on
-        // the fixed port, by a config with one endpoint in it — so the winning path is not the
-        // same socket that was being probed a moment ago.
-        stopProcess()
-        val config = XrayConfig.build(
-            winner.endpoint,
-            XrayConfig.SOCKS_PORT,
-            "warning",
-            if (winner.mode == DialMode.SPOOF) SpoofProxy.address() else null,
-        )
-        launch(binary, write("core.json", config))
-        check(waitForListener(XrayConfig.SOCKS_PORT)) { "the core did not open its port" }
-
-        val latency = SocksProbe.latencyMillis(XrayConfig.SOCKS_LISTEN, XrayConfig.SOCKS_PORT, PROBE_TIMEOUT_MS)
-        if (latency < 0) {
-            stop()
-            error("the chosen endpoint stopped answering on the real port")
-        }
-
-        pool.recordSuccess(winner.endpoint.key(), latency, System.currentTimeMillis())
+        pool.recordSuccess(live.attempt.endpoint.key(), live.latencyMs, System.currentTimeMillis())
         save()
-        log("path 1 reached its endpoint ${DialMode.label(winner.mode)} in ${latency}ms")
+        log("path 1 reached its endpoint ${DialMode.label(live.attempt.mode)} in ${live.latencyMs}ms")
 
         Session(socksPort = XrayConfig.SOCKS_PORT, engine = name, shape = shape)
     }
@@ -114,7 +95,7 @@ internal class XrayEngine(
      * hundred listening sockets, and because the ranking is worth respecting: if the endpoints
      * that worked here last week still work, the first round ends it.
      */
-    private fun search(binary: File, modes: IntArray): XrayConfig.Attempt? {
+    private fun search(binary: File, modes: IntArray): Live? {
         val now = System.currentTimeMillis()
         val tried = mutableSetOf<String>()
         log("pool holds ${pool.size()} endpoints")
@@ -149,12 +130,52 @@ internal class XrayEngine(
                 pool.recordFailure(key, now)
             }
 
-            val best = StealthBatch.best(latencies)
-            if (best >= 0) return attempts[best]
+            // 🚨 Every endpoint that answered, best first - not just the best one. The round and
+            // the real connection are two different cores, and an endpoint that answered a probe
+            // a second ago can still refuse the next connection: these are free public servers
+            // under load, and some of them accept one session at a time. Giving up on the whole
+            // engine at that point is what made the app need a second tap on Connect, with a
+            // round full of proven endpoints thrown away for one that went quiet.
+            for (index in latencies.indices
+                .filter { latencies[it] >= 0 }
+                .sortedBy { latencies[it] }
+                .take(ESTABLISH_TRIES)) {
+                val attempt = attempts[index]
+                val latency = establish(binary, attempt)
+                if (latency >= 0) return Live(attempt, latency)
+                log("an endpoint answered the round and then would not carry the tunnel")
+                pool.recordFailure(attempt.endpoint.key(), now)
+            }
         }
 
         save()
         return null
+    }
+
+    /** An endpoint that answered on the real port, and how long it took. */
+    private class Live(val attempt: XrayConfig.Attempt, val latencyMs: Long)
+
+    /**
+     * Puts one endpoint on the real SOCKS port and proves it there.
+     *
+     * The round only filters. The connection the user's traffic rides is established here, by a
+     * config with a single endpoint in it, so the winning path is not the same socket that was
+     * being probed a moment ago.
+     *
+     * @return its latency, or negative if it did not answer on the real port
+     */
+    private fun establish(binary: File, attempt: XrayConfig.Attempt): Long {
+        stopProcess()
+        val config = XrayConfig.build(
+            attempt.endpoint,
+            XrayConfig.SOCKS_PORT,
+            "warning",
+            null,
+            if (attempt.mode == DialMode.SPOOF) SpoofProxy.address() else null,
+        )
+        launch(binary, write("core.json", config))
+        if (!waitForListener(XrayConfig.SOCKS_PORT)) return -1
+        return SocksProbe.latencyMillis(XrayConfig.SOCKS_LISTEN, XrayConfig.SOCKS_PORT, PROBE_TIMEOUT_MS)
     }
 
     private fun nextCandidates(tried: MutableSet<String>, now: Long, limit: Int): List<ProxyConfig> {
@@ -251,6 +272,9 @@ internal class XrayEngine(
     private companion object {
         const val EXECUTABLE = "libxray.so"
         const val MAX_ROUNDS = 4
+
+        /** How many of a round's answers are given a real connection before moving to the next. */
+        const val ESTABLISH_TRIES = 3
         const val ROUND_BUDGET_MS = 20_000L
         const val PROBE_TIMEOUT_MS = 6_000
         const val LISTENER_WAIT_MS = 8_000L

@@ -95,6 +95,14 @@ final class XrayConfig {
         if (endpoint == null || endpoint.host == null || endpoint.host.isEmpty()) return false;
         if (endpoint.port <= 0 || endpoint.port > 65535) return false;
         if (endpoint.id == null || endpoint.id.isEmpty()) return false;
+        // 🚨 A Reality line with no public key is the same trap as an unknown ss cipher, and it
+        // cost a whole round on a real device: the core refused the entire document with
+        // `Failed to build REALITY config > empty "password"`, so twenty-four endpoints died for
+        // one bad line and the log read "the core did not come up for this round". The key is not
+        // optional and cannot be defaulted - it is the server's identity - so a line without one
+        // could never have connected anyway.
+        if (endpoint.isReality() && param(endpoint, "pbk").isEmpty()) return false;
+
         switch (endpoint.protocol) {
             case "vless":
             case "trojan":
@@ -178,6 +186,25 @@ final class XrayConfig {
      *                                  mistake shows up here rather than as an opaque core error
      */
     static String build(ProxyConfig endpoint, int socksPort, String logLevel, String carrier) {
+        return build(endpoint, socksPort, logLevel, carrier, null);
+    }
+
+    /**
+     * As above, with the shaping proxy told apart from the carrier.
+     *
+     * <p>🚨 These two are both a local SOCKS hop and they were being passed as the same argument,
+     * which quietly changed the config in a way that had nothing to do with dialling. The DNS rule
+     * sends the core's own lookups to the carrier when there is one, because a carrier is a
+     * working tunnel. The shaping proxy is not that: it is a local process that splits the first
+     * packet of every connection it is given, which is right for a TLS handshake and wrong for a
+     * plain DNS query. So an endpoint proved in a round - where lookups go direct - was then
+     * re-established with its lookups going through the shaper, and stopped answering. The round
+     * and the real connection have to be the same shape or the proof means nothing.
+     *
+     * @param spoof a {@code host:port} SOCKS5 proxy that shapes the handshake, or null
+     */
+    static String build(ProxyConfig endpoint, int socksPort, String logLevel, String carrier,
+                        String spoof) {
         if (!supports(endpoint)) {
             throw new IllegalArgumentException("The Stealth engine cannot dial " + endpoint);
         }
@@ -216,13 +243,16 @@ final class XrayConfig {
             .append("\"queryStrategy\":\"UseIP\",\"disableCache\":false},");
 
         String[] hop = carrierHop(carrier);
+        String[] shapedHop = carrierHop(spoof);
         boolean chained = hop != null;
-        boolean fragmented = !chained && isSecured(endpoint);
+        boolean shaped = !chained && shapedHop != null;
+        boolean fragmented = !chained && !shaped && isSecured(endpoint);
         json.append("\"outbounds\":[");
         appendProxyOutbound(json, endpoint, "proxy",
-                chained ? CARRIER_TAG : fragmented ? FRAGMENT_TAG : null);
+                chained ? CARRIER_TAG : shaped ? SPOOF_TAG : fragmented ? FRAGMENT_TAG : null);
         if (fragmented) appendFragmentOutbound(json);
         if (chained) appendCarrierOutbound(json, hop[0], Integer.parseInt(hop[1]));
+        if (shaped) appendSocksOutbound(json, SPOOF_TAG, shapedHop[0], Integer.parseInt(shapedHop[1]));
         json.append(",{\"tag\":").append(quote(DIRECT_TAG)).append(",\"protocol\":\"freedom\"}")
             .append(",{\"tag\":\"block\",\"protocol\":\"blackhole\"}],");
 
