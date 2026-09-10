@@ -10,10 +10,7 @@ import android.content.ServiceConnection
 import android.os.IBinder
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.torproject.jni.TorService
@@ -22,7 +19,6 @@ import xyz.jmc.gozar.core.Session
 import xyz.jmc.gozar.core.Shape
 import xyz.jmc.gozar.direct.PoolStore
 import xyz.jmc.gozar.direct.XrayEngine
-import kotlin.coroutines.resume
 
 /**
  * Transport names as IPtProxy knows them. These strings are the API — they are
@@ -84,6 +80,9 @@ class TorEngine(
 
     @Volatile private var bound = false
     @Volatile private var binder: TorService.LocalBinder? = null
+    @Volatile private var died = false
+    @Volatile private var lastPhase = ""
+    private var receiver: BroadcastReceiver? = null
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(component: ComponentName?, service: IBinder?) {
@@ -102,17 +101,13 @@ class TorEngine(
 
         writeTorrc(plugins)
 
-        // Tor is asked what it is doing while we wait, and every change is written down. Without
-        // this a failure is one line — "it did not come up" — and the difference between a bridge
-        // that never answered, a handshake that was cut, and a directory fetch that stalled is
-        // invisible. Those three want three different fixes.
-        val up = coroutineScope {
-            val phases = launch { trackBootstrap() }
-            val result = withTimeoutOrNull(BOOTSTRAP_TIMEOUT_MS) { awaitCircuit() }
-            phases.cancel()
-            result
+        launchService()
+
+        val up = withTimeoutOrNull(BOOTSTRAP_TIMEOUT_MS) { awaitBootstrap() }
+        check(up == true) {
+            "tor got no further than ${lastPhase.ifEmpty { "not started" }} " +
+                "in ${BOOTSTRAP_TIMEOUT_MS / 1000}s"
         }
-        check(up == true) { "tor built no circuit in ${BOOTSTRAP_TIMEOUT_MS / 1000}s" }
 
         val port = socksPort()
         log("tor is up, socks on $port")
@@ -120,6 +115,10 @@ class TorEngine(
     }
 
     override fun stop() {
+        receiver?.let { registered ->
+            runCatching { LocalBroadcastManager.getInstance(context).unregisterReceiver(registered) }
+        }
+        receiver = null
         if (bound) {
             runCatching { context.unbindService(connection) }
             bound = false
@@ -185,29 +184,25 @@ class TorEngine(
     }
 
     /**
-     * Waits for Tor's first completed circuit, which is what TorService reports
-     * as ON. Registering before starting matters: the status that says we made
-     * it is a transition, and a transition missed is a transition gone.
+     * Starts the service and keeps a handle on it.
+     *
+     * The receiver goes on before the service does. The statuses that say it gave up are
+     * transitions, and a transition missed is a transition gone.
      */
-    private suspend fun awaitCircuit(): Boolean = suspendCancellableCoroutine { cont ->
-        val manager = LocalBroadcastManager.getInstance(context)
+    private fun launchService() {
+        died = false
+        lastPhase = ""
 
+        val manager = LocalBroadcastManager.getInstance(context)
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
                 when (intent?.getStringExtra(TorService.EXTRA_STATUS)) {
-                    TorService.STATUS_ON -> finish(true)
-                    TorService.STATUS_OFF, TorService.STATUS_STOPPING -> finish(false)
+                    TorService.STATUS_OFF, TorService.STATUS_STOPPING -> died = true
                 }
             }
-
-            private fun finish(ok: Boolean) {
-                runCatching { manager.unregisterReceiver(this) }
-                if (cont.isActive) cont.resume(ok)
-            }
         }
-
         manager.registerReceiver(receiver, IntentFilter(TorService.ACTION_STATUS))
-        cont.invokeOnCancellation { runCatching { manager.unregisterReceiver(receiver) } }
+        this.receiver = receiver
 
         val intent = Intent(context, TorService::class.java)
         context.startService(intent)
@@ -215,27 +210,40 @@ class TorEngine(
     }
 
     /**
-     * Polls Tor's own bootstrap phase and logs it whenever it moves.
+     * Waits until Tor says it is fully bootstrapped, logging every step on the way.
      *
-     * The percentage is the useful part. Stuck at 5 means no bridge answered at all; stuck around
-     * 10-14 means one answered and the connection was cut during the handshake; stuck in the 20s
-     * or 50s means the bridge works and the directory fetch behind it does not. Reaching 100 and
-     * still carrying nothing means the circuit is real and something after it is broken.
+     * 🚨 Deliberately NOT the service's own ON status. That status was measured firing two seconds
+     * in, while Tor's own bootstrap phase still read 20% — an encrypted directory connection, no
+     * circuit, nothing that could carry a byte. Acting on it meant handing the racer a SOCKS port
+     * that was not going to work for another minute, which the racer then correctly wrote off as a
+     * dead engine. Tor's bootstrap phase is Tor's own answer about Tor's own state, so that is what
+     * is waited on.
+     *
+     * The percentage is also the diagnosis when it fails. Stuck at 5 means no bridge answered at
+     * all; stuck around 10-14 means one answered and the connection was cut during the handshake;
+     * stuck in the 20s or 50s means the bridge works and the directory fetch behind it does not.
      */
-    private suspend fun trackBootstrap() {
-        var last = ""
+    private suspend fun awaitBootstrap(): Boolean {
         while (true) {
-            delay(PHASE_POLL_MS)
-            val phase = runCatching { binder?.service?.getInfo("status/bootstrap-phase") }
-                .getOrNull() ?: continue
-            val percent = PROGRESS.find(phase)?.groupValues?.get(1) ?: "?"
-            val summary = phase.substringAfter("SUMMARY=\"", "").substringBefore("\"")
-                .ifEmpty { phase.trim() }
-            val line = "$percent% $summary"
-            if (line != last) {
-                last = line
-                log("tor: $line")
+            if (died) {
+                log("tor stopped at ${lastPhase.ifEmpty { "the very beginning" }}")
+                return false
             }
+
+            val phase = runCatching { binder?.service?.getInfo("status/bootstrap-phase") }.getOrNull()
+            if (phase != null) {
+                val percent = PROGRESS.find(phase)?.groupValues?.get(1) ?: "?"
+                val summary = phase.substringAfter("SUMMARY=\"", "").substringBefore("\"")
+                    .ifEmpty { phase.trim() }
+                val line = "$percent% $summary"
+                if (line != lastPhase) {
+                    lastPhase = line
+                    log("tor: $line")
+                }
+                if (percent == "100") return true
+            }
+
+            delay(PHASE_POLL_MS)
         }
     }
 
@@ -270,7 +278,7 @@ class TorEngine(
         /** What TorService uses when the port is free, which it almost always is. */
         const val FALLBACK_SOCKS_PORT = 9050
 
-        const val PHASE_POLL_MS = 2_000L
+        const val PHASE_POLL_MS = 750L
 
         val PROGRESS = Regex("PROGRESS=(\\d+)")
     }

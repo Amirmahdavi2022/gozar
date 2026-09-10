@@ -25,11 +25,18 @@ import java.net.URL
  * The hostname is deliberately left unresolved here. With a proxy set, the JDK
  * hands the name to the SOCKS server rather than looking it up locally, so the
  * probe exercises the same path a real request takes and never leaks a lookup.
+ *
+ * 🚨 https, not http, and this is load-bearing rather than tidiness. Android blocks cleartext
+ * traffic by default for anything built against a modern SDK, and it blocks it in the http stack
+ * before a single byte reaches the socket — so an http probe fails instantly, on every network,
+ * through every tunnel, with an error that reads like the tunnel refused it. Every engine looked
+ * dead because the ruler was broken. TLS also makes this a better test: it proves the tunnel
+ * carried a real handshake, not just that a port accepted a connection.
  */
 class HttpProbe(
     private val targets: List<String> = listOf(
-        "http://connectivitycheck.gstatic.com/generate_204",
-        "http://cp.cloudflare.com/generate_204",
+        "https://connectivitycheck.gstatic.com/generate_204",
+        "https://cp.cloudflare.com/generate_204",
     ),
     private val timeoutMs: Int = 8_000,
     private val log: (String) -> Unit = {},
