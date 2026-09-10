@@ -82,6 +82,9 @@ class TorEngine(
      */
     override val probeTimeoutMs: Int = 45_000
 
+    /** The fallback, and the second thing tried. See Engine.label for why this is not the name. */
+    override val label: String = "path 2"
+
     override val needsBootstrap: Boolean
         get() = Transport.ALL.none { bridges(it).isNotEmpty() }
 
@@ -106,7 +109,7 @@ class TorEngine(
     override suspend fun start(): Session = withContext(Dispatchers.IO) {
         val plugins = startTransports()
         check(plugins.isNotEmpty()) { "no transport came up, so tor has nothing to dial through" }
-        log("transports listening: " + plugins.entries.joinToString { "${it.key}:${it.value}" })
+        log("path 2 has ${plugins.size} transports listening")
 
         writeTorrc(plugins)
 
@@ -119,7 +122,7 @@ class TorEngine(
         }
 
         val port = socksPort()
-        log("tor is up, socks on $port")
+        log("path 2 is up, socks on $port")
         Session(socksPort = port, engine = name, shape = shape)
     }
 
@@ -158,11 +161,11 @@ class TorEngine(
                 started += transport
                 controller.port(transport).toInt()
             }.getOrElse { e ->
-                log("$transport did not start: ${e.message}")
+                log("one of path 2's transports did not start: ${e.message}")
                 0
             }
 
-            if (port > 0) put(transport, port) else log("$transport reported no port")
+            if (port > 0) put(transport, port) else log("one of path 2's transports reported no port")
         }
     }
 
@@ -235,7 +238,7 @@ class TorEngine(
     private suspend fun awaitBootstrap(): Boolean {
         while (true) {
             if (died) {
-                log("tor stopped at ${lastPhase.ifEmpty { "the very beginning" }}")
+                log("path 2 stopped at ${lastPhase.ifEmpty { "the very beginning" }}")
                 return false
             }
 
@@ -247,7 +250,7 @@ class TorEngine(
                 val line = "$percent% $summary"
                 if (line != lastPhase) {
                     lastPhase = line
-                    log("tor: $line")
+                    log("path 2: $line")
                 }
                 if (percent == "100") return true
             }
@@ -269,7 +272,7 @@ class TorEngine(
             if (port > 0) return port
             delay(SOCKS_PORT_WAIT_MS)
         }
-        log("tor never reported its socks port, assuming $FALLBACK_SOCKS_PORT")
+        log("path 2 never reported its socks port, assuming $FALLBACK_SOCKS_PORT")
         return FALLBACK_SOCKS_PORT
     }
 

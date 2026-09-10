@@ -46,7 +46,7 @@ import xyz.jmc.gozar.R
 import xyz.jmc.gozar.core.Diary
 import xyz.jmc.gozar.core.Support
 
-private enum class Screen { HOME, SETTINGS, ABOUT }
+private enum class Screen { HOME, SETTINGS, ABOUT, DIARY }
 
 @Composable
 fun GozarRoot(onToggle: () -> Unit) {
@@ -59,7 +59,11 @@ fun GozarRoot(onToggle: () -> Unit) {
             onAbout = { screen = Screen.ABOUT },
         )
         Screen.SETTINGS -> SettingsScreen(onBack = { screen = Screen.HOME })
-        Screen.ABOUT -> AboutScreen(onBack = { screen = Screen.HOME })
+        Screen.ABOUT -> AboutScreen(
+            onBack = { screen = Screen.HOME },
+            onDiary = { screen = Screen.DIARY },
+        )
+        Screen.DIARY -> DiaryScreen(onBack = { screen = Screen.ABOUT })
     }
 }
 
@@ -187,20 +191,25 @@ private fun SettingsScreen(onBack: () -> Unit) {
             }
         }
 
-        Spacer(Modifier.height(14.dp))
+    }
+}
 
-        // Not for the average user, and not hidden behind a developer flag
-        // either. When a connection fails the only witness is the phone it
-        // failed on, and if that phone cannot say what it saw, the next fix is
-        // a guess. One button, no upload, nothing leaves unless it is pasted.
+/**
+ * The log, reachable only by tapping the version in About five times.
+ *
+ * 🚨 Hidden rather than removed, and the distinction was learned the hard way on the last app:
+ * the screen was taken out because it had answered the question it was built for, and a fortnight
+ * later a new question arrived that only one device could answer — and that device no longer had
+ * a way to speak. So it stays. It is simply not in front of a user who has no use for it, and
+ * everything it prints has been through [Redact] first.
+ */
+@Composable
+private fun DiaryScreen(onBack: () -> Unit) {
+    val context = LocalContext.current
+    var note by remember { mutableStateOf<String?>(null) }
+
+    SubScreen(title = stringResource(R.string.diary), onBack = onBack) {
         Card {
-            Text(
-                stringResource(R.string.diary),
-                color = GozarColors.Ink,
-                fontSize = 16.sp,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Spacer(Modifier.height(6.dp))
             Text(stringResource(R.string.diary_note), color = GozarColors.Muted, fontSize = 13.sp)
             Spacer(Modifier.height(14.dp))
             PillButton(stringResource(R.string.copy_diary), filled = false) {
@@ -210,19 +219,47 @@ private fun SettingsScreen(onBack: () -> Unit) {
                 )
                 note = context.getString(R.string.copied)
             }
+            note?.let {
+                Spacer(Modifier.height(10.dp))
+                Text(it, color = GozarColors.Muted, fontSize = 13.sp)
+            }
+        }
+
+        Spacer(Modifier.height(14.dp))
+
+        Card {
+            Text(
+                Diary.text(),
+                color = GozarColors.Muted,
+                fontSize = 11.sp,
+                fontFamily = FontFamily.Monospace,
+            )
         }
     }
 }
 
 @Composable
-private fun AboutScreen(onBack: () -> Unit) {
+private fun AboutScreen(onBack: () -> Unit, onDiary: () -> Unit) {
     val context = LocalContext.current
+    var taps by remember { mutableStateOf(0) }
 
     SubScreen(title = stringResource(R.string.about), onBack = onBack) {
         Card {
             Text("Gozar", color = GozarColors.Ink, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(4.dp))
-            Text("0.1.0", color = GozarColors.Muted, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
+            // 🚨 Read from the package rather than typed here. The last app carried a hand-written
+            // version string that said 2.0.0 for sixteen releases, because nothing makes you
+            // update a number that nothing checks.
+            Text(
+                installedVersion(context),
+                color = GozarColors.Muted,
+                fontSize = 13.sp,
+                fontFamily = FontFamily.Monospace,
+                modifier = Modifier.clickable {
+                    taps++
+                    if (taps >= DIARY_TAPS) { taps = 0; onDiary() }
+                },
+            )
             Spacer(Modifier.height(16.dp))
             Text(
                 "Gozar tries several ways out at once and keeps whichever one actually carries traffic. " +
@@ -298,3 +335,10 @@ private fun PillButton(label: String, filled: Boolean, onClick: () -> Unit) {
  * paragraph direction wins over the latin run.
  */
 fun handleLtr(): String = "\u200E" + Support.CHANNEL_HANDLE
+
+/** How many taps on the version open the log. Enough that nobody arrives there by accident. */
+private const val DIARY_TAPS = 5
+
+private fun installedVersion(context: android.content.Context): String = runCatching {
+    context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "?"
+}.getOrDefault("?")

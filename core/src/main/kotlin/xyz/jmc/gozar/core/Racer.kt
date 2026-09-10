@@ -83,7 +83,7 @@ class Racer(
 
         val order = board.order(network, engines).filter { engine ->
             val skip = engine.needsBootstrap && !board.isBootstrapped(engine.name)
-            if (skip) log("skipping ${engine.name}, nothing to bootstrap from yet")
+            if (skip) log("skipping ${engine.label}, nothing to bootstrap from yet")
             !skip
         }
         if (order.isEmpty()) {
@@ -124,7 +124,7 @@ class Racer(
                     }
 
                     if (runner == null) {
-                        log("${engine.name} ${reason}")
+                        log("${engine.label} ${reason}")
                         engine.stop()
                         board.record(network, engine.name, ok = false, tookMs = 0)
                     } else {
@@ -144,7 +144,7 @@ class Racer(
 
                 if (winner == null) {
                     winner = runner
-                    log("up on ${runner.engine.name} in ${runner.tookMs}ms")
+                    log("up on ${runner.engine.label} in ${runner.tookMs}ms")
                     continue
                 }
 
@@ -156,7 +156,7 @@ class Racer(
                 }
                 if (wanted) {
                     lock.withLock { standby = runner }
-                    log("holding ${runner.engine.name} warm behind it")
+                    log("holding ${runner.engine.label} warm behind it")
                 } else {
                     runner.engine.stop()
                 }
@@ -196,7 +196,7 @@ class Racer(
             if (misses < HEALTH_TOLERANCE) continue
             misses = 0
 
-            log("${current.engine.name} stopped answering, moving over")
+            log("${current.engine.label} stopped answering, moving over")
             board.record(network, current.engine.name, ok = false, tookMs = 0)
 
             val moved = promoteStandby()
@@ -225,7 +225,7 @@ class Racer(
         active = next
         standby = null
         old?.engine?.stop()
-        log("now on ${next.engine.name}")
+        log("now on ${next.engine.label}")
         next.session
     }
 

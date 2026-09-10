@@ -58,8 +58,22 @@ data class Session(
  * same second.
  */
 interface Engine {
-    /** For logs only. Never shown to the user. */
+    /**
+     * The key this engine is scored and remembered under. Never printed.
+     *
+     * 🚨 Keep it stable. It is what the scoreboard, the bootstrap flag and the saved route are all
+     * filed against, so renaming it silently discards everything the device has learned.
+     */
     val name: String
+
+    /**
+     * What the log calls it.
+     *
+     * Separate from [name] on purpose: the log is written to be pasted, and naming the machinery
+     * tells whoever reads it exactly which technique to look for. A number says as much as anyone
+     * debugging needs and nothing more.
+     */
+    val label: String get() = name
 
     val shape: Shape
 

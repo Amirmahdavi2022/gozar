@@ -148,7 +148,7 @@ object Tunnel {
 
         val tunnel = tun2socks ?: Tun2Socks(context.filesDir).also { tun2socks = it }
         val wired = tunnel.start(fd, session.socksPort, ::note)
-        note(if (wired) "tun wired to ${session.engine} on ${session.socksPort}" else "tun would not attach")
+        note(if (wired) "tun wired on ${session.socksPort}" else "tun would not attach")
         return wired
     }
 

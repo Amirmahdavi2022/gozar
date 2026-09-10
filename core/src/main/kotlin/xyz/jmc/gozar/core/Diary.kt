@@ -64,7 +64,10 @@ object Diary {
     fun write(line: String) {
         if (startedAt == 0L) startedAt = System.currentTimeMillis()
         val seconds = (System.currentTimeMillis() - startedAt) / 1000
-        val entry = "[%3ds] %s".format(seconds, line)
+        // Redacted here rather than at the copy button, so an address is never written to disk in
+        // the first place. A file that has to be sanitised before it is read is a file someone
+        // will eventually read unsanitised.
+        val entry = "[%3ds] %s".format(seconds, Redact.line(line))
 
         lines.addLast(entry)
         while (lines.size > KEEP) lines.removeFirst()
@@ -132,7 +135,7 @@ object Diary {
             // Only the tail: these can run to thousands of lines, and the last words are the ones
             // that say how it ended.
             val tail = body.trim().lines().takeLast(80).joinToString("\n")
-            parts += "--- $label ---\n" + tail
+            parts += "--- $label ---\n" + Redact.block(tail)
         }
 
         return if (parts.isEmpty()) "nothing yet" else parts.joinToString("\n\n")

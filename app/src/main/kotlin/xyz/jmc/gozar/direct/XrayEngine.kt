@@ -40,6 +40,9 @@ internal class XrayEngine(
 
     override val name: String = "direct"
 
+    /** Tried first, so it is the first path. See Engine.label for why this is not the name. */
+    override val label: String = "path 1"
+
     /** TLS to what looks like a website. Nothing like Tor's shape, which is the point. */
     override val shape: Shape = Shape.HTTPS
 
@@ -94,7 +97,7 @@ internal class XrayEngine(
 
         pool.recordSuccess(winner.endpoint.key(), latency, System.currentTimeMillis())
         save()
-        log("up on ${winner.endpoint} ${DialMode.label(winner.mode)} in ${latency}ms")
+        log("path 1 reached its endpoint ${DialMode.label(winner.mode)} in ${latency}ms")
 
         Session(socksPort = XrayConfig.SOCKS_PORT, engine = name, shape = shape)
     }

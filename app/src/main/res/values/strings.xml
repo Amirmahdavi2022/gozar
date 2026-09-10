@@ -26,7 +26,7 @@
     <string name="forget">Forget it</string>
     <string name="forgotten">Cleared</string>
     <string name="diary">What happened last time</string>
-    <string name="diary_note">A plain record of what Gozar tried on this phone. Nothing is sent anywhere. Copy it and paste it to us if a connection will not come up.</string>
+    <string name="diary_note">A record of what Gozar tried on this phone, with addresses left out. Nothing is sent anywhere. Copy it and paste it to us if a connection will not come up.</string>
     <string name="copy_diary">Copy it</string>
     <string name="copied">Copied</string>
 </resources>
