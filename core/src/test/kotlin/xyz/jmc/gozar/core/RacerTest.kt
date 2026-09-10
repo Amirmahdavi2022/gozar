@@ -64,8 +64,9 @@ class RacerTest {
         racer.connect(NetworkId.UNKNOWN)
 
         // The winner is handed back the moment it is proven, so the runner-up is still racing at
-        // that point and is dealt with behind the live tunnel.
-        testScheduler.advanceUntilIdle()
+        // that point and is dealt with behind the live tunnel. Waiting on virtual time rather than
+        // advanceUntilIdle, because the health watcher never goes idle by design.
+        delay(10_000)
         assertTrue(sameShape.stopped, "same-shape runner-up should not be held warm")
     }
 
