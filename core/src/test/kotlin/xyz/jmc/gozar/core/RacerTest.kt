@@ -63,7 +63,30 @@ class RacerTest {
         val racer = Racer(listOf(first, sameShape), Scoreboard(MemoryStore()), probe, backgroundScope)
         racer.connect(NetworkId.UNKNOWN)
 
+        // The winner is handed back the moment it is proven, so the runner-up is still racing at
+        // that point and is dealt with behind the live tunnel.
+        testScheduler.advanceUntilIdle()
         assertTrue(sameShape.stopped, "same-shape runner-up should not be held warm")
+    }
+
+    @Test
+    fun `a proven engine is handed over without waiting for a slower one`() = runTest {
+        // The failure this guards against cost two and a half minutes on a real device: the fast
+        // engine was up and verified, and the app sat on it until the other engine finished
+        // timing out.
+        val quick = FakeEngine("quick", Shape.HTTPS)
+        val crawler = FakeEngine("crawler", Shape.WEBRTC, startDelayMs = 120_000)
+
+        val racer = Racer(listOf(quick, crawler), Scoreboard(MemoryStore()),
+            FakeProbe(listOf(quick, crawler)), backgroundScope)
+
+        val before = testScheduler.currentTime
+        val session = racer.connect(NetworkId.UNKNOWN)
+        val waited = testScheduler.currentTime - before
+
+        assertNotNull(session)
+        assertEquals("quick", session.engine)
+        assertTrue(waited < 60_000, "handed over after ${waited}ms, which means it waited for the slow engine")
     }
 
     @Test

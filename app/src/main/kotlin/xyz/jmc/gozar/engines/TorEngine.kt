@@ -80,7 +80,12 @@ class TorEngine(
      * request from a filtered network, and refusing to wait it out means throwing away the one
      * engine that got through.
      */
-    override val probeTimeoutMs: Int = 45_000
+    // 🚨 Was forty-five seconds, and the probe tries three targets in turn, so a tunnel that came
+    // up and carried nothing took over two minutes to be declared dead. That is survivable now
+    // that the race no longer waits for it, but it is still a long time to hold an engine open on
+    // the chance it answers. A circuit that is going to carry a two hundred byte reply carries it
+    // well inside this.
+    override val probeTimeoutMs: Int = 15_000
 
     /** The fallback, and the second thing tried. See Engine.label for why this is not the name. */
     override val label: String = "path 2"

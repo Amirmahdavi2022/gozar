@@ -10,7 +10,6 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.coroutineScope
 
 /**
  * Starts several engines at once and keeps the first one that proves it carries
@@ -93,79 +92,103 @@ class Racer(
 
         val finished = Channel<Runner?>(capacity = order.size)
 
-        coroutineScope {
-            order.forEachIndexed { index, engine ->
-                launch {
-                    delay(index * LAUNCH_STAGGER_MS)
+        order.forEachIndexed { index, engine ->
+            scope.launch {
+                delay(index * LAUNCH_STAGGER_MS)
 
-                    val startedAt = clock()
+                val startedAt = clock()
 
-                    // Carried out rather than logged inside, because a cancelled block cannot
-                    // report anything and "it timed out" was being printed for every failure,
-                    // including ones that had already been diagnosed a line earlier.
-                    var reason = "ran out of time after ${engine.deadlineMs / 1000}s"
+                // Carried out rather than logged inside, because a cancelled block cannot
+                // report anything and "it timed out" was being printed for every failure,
+                // including ones that had already been diagnosed a line earlier.
+                var reason = "ran out of time after ${engine.deadlineMs / 1000}s"
 
-                    val runner = withTimeoutOrNull(engine.deadlineMs) {
-                        val session = try {
-                            engine.start()
-                        } catch (e: Exception) {
-                            reason = "could not start: ${e.message}"
-                            return@withTimeoutOrNull null
-                        }
-
-                        // Up is not the same as working.
-                        if (!prober.through(session.socksPort, engine.probeTimeoutMs)) {
-                            reason = "came up on port ${session.socksPort} and carried nothing"
-                            engine.stop()
-                            return@withTimeoutOrNull null
-                        }
-
-                        Runner(engine, session, clock() - startedAt)
+                val runner = withTimeoutOrNull(engine.deadlineMs) {
+                    val session = try {
+                        engine.start()
+                    } catch (e: Exception) {
+                        reason = "could not start: ${e.message}"
+                        return@withTimeoutOrNull null
                     }
 
-                    if (runner == null) {
-                        log("${engine.label} ${reason}")
+                    // Up is not the same as working.
+                    if (!prober.through(session.socksPort, engine.probeTimeoutMs)) {
+                        reason = "came up on port ${session.socksPort} and carried nothing"
                         engine.stop()
-                        board.record(network, engine.name, ok = false, tookMs = 0)
-                    } else {
-                        board.record(network, engine.name, ok = true, tookMs = runner.tookMs)
+                        return@withTimeoutOrNull null
                     }
-                    finished.send(runner)
-                }
-            }
 
-            var seen = 0
-            var winner: Runner? = null
-
-            while (seen < order.size) {
-                val runner = finished.receive()
-                seen++
-                if (runner == null) continue
-
-                if (winner == null) {
-                    winner = runner
-                    log("up on ${runner.engine.label} in ${runner.tookMs}ms")
-                    continue
+                    Runner(engine, session, clock() - startedAt)
                 }
 
-                // Someone else came up after we already had a winner. Keep it
-                // warm only if it fails differently — a standby of the same
-                // shape dies alongside the thing it is meant to replace.
-                val wanted = lock.withLock {
-                    standby == null && runner.engine.shape != winner!!.engine.shape
-                }
-                if (wanted) {
-                    lock.withLock { standby = runner }
-                    log("holding ${runner.engine.label} warm behind it")
+                if (runner == null) {
+                    log("${engine.label} ${reason}")
+                    engine.stop()
+                    board.record(network, engine.name, ok = false, tookMs = 0)
                 } else {
-                    runner.engine.stop()
+                    board.record(network, engine.name, ok = true, tookMs = runner.tookMs)
                 }
+                finished.send(runner)
             }
-
-            lock.withLock { active = winner }
         }
 
-        return lock.withLock { active }?.session
+        // 🚨 The loop stops at the FIRST engine that proves itself, and that is the whole point of
+        // it. It used to wait for every engine to report before handing the tunnel over, so a
+        // proven engine sat idle while a losing one worked through its own timeouts. A device log
+        // measured the cost: the fast path was up and verified at twenty-two seconds, the other
+        // engine did not finish failing until a hundred and fifty-three, and the user waited the
+        // whole two and a half minutes staring at a connection that already worked.
+        //
+        // The engines that have not reported yet are not abandoned - [gather] picks them up off
+        // the same channel afterwards, so a genuine standby is still kept warm. It just happens
+        // behind a tunnel that is already carrying traffic instead of in front of it.
+        var seen = 0
+        var winner: Runner? = null
+        while (seen < order.size) {
+            val runner = finished.receive()
+            seen++
+            if (runner != null) {
+                winner = runner
+                break
+            }
+        }
+
+        if (winner == null) return null
+
+        log("up on ${winner.engine.label} in ${winner.tookMs}ms")
+        lock.withLock { active = winner }
+
+        val stillRacing = order.size - seen
+        if (stillRacing > 0) scope.launch { gather(stillRacing, finished) }
+
+        return winner.session
+    }
+
+    /**
+     * Takes the engines that were still racing when the winner was decided.
+     *
+     * One of them is kept warm only if it fails differently - a standby of the same shape dies
+     * alongside the thing it is meant to replace - and the rest are shut down rather than left
+     * burning battery behind a tunnel nobody is going to move to.
+     */
+    private suspend fun gather(count: Int, finished: Channel<Runner?>) {
+        repeat(count) {
+            val runner = finished.receive()
+            if (runner == null) return@repeat
+
+            val wanted = lock.withLock {
+                val current = active
+                !stopping && current != null && standby == null &&
+                    runner.engine.shape != current.engine.shape
+            }
+
+            if (wanted) {
+                lock.withLock { standby = runner }
+                log("holding ${runner.engine.label} warm behind it")
+            } else {
+                runner.engine.stop()
+            }
+        }
     }
 
     private fun startWatching(network: NetworkId) {
