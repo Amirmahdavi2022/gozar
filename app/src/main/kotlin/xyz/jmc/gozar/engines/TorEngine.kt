@@ -10,6 +10,8 @@ import android.content.ServiceConnection
 import android.os.IBinder
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -100,7 +102,16 @@ class TorEngine(
 
         writeTorrc(plugins)
 
-        val up = withTimeoutOrNull(BOOTSTRAP_TIMEOUT_MS) { awaitCircuit() }
+        // Tor is asked what it is doing while we wait, and every change is written down. Without
+        // this a failure is one line — "it did not come up" — and the difference between a bridge
+        // that never answered, a handshake that was cut, and a directory fetch that stalled is
+        // invisible. Those three want three different fixes.
+        val up = coroutineScope {
+            val phases = launch { trackBootstrap() }
+            val result = withTimeoutOrNull(BOOTSTRAP_TIMEOUT_MS) { awaitCircuit() }
+            phases.cancel()
+            result
+        }
         check(up == true) { "tor built no circuit in ${BOOTSTRAP_TIMEOUT_MS / 1000}s" }
 
         val port = socksPort()
@@ -204,6 +215,31 @@ class TorEngine(
     }
 
     /**
+     * Polls Tor's own bootstrap phase and logs it whenever it moves.
+     *
+     * The percentage is the useful part. Stuck at 5 means no bridge answered at all; stuck around
+     * 10-14 means one answered and the connection was cut during the handshake; stuck in the 20s
+     * or 50s means the bridge works and the directory fetch behind it does not. Reaching 100 and
+     * still carrying nothing means the circuit is real and something after it is broken.
+     */
+    private suspend fun trackBootstrap() {
+        var last = ""
+        while (true) {
+            delay(PHASE_POLL_MS)
+            val phase = runCatching { binder?.service?.getInfo("status/bootstrap-phase") }
+                .getOrNull() ?: continue
+            val percent = PROGRESS.find(phase)?.groupValues?.get(1) ?: "?"
+            val summary = phase.substringAfter("SUMMARY=\"", "").substringBefore("\"")
+                .ifEmpty { phase.trim() }
+            val line = "$percent% $summary"
+            if (line != last) {
+                last = line
+                log("tor: $line")
+            }
+        }
+    }
+
+    /**
      * Asks Tor which port it actually opened.
      *
      * TorService reads this off its own control port right after authenticating
@@ -233,6 +269,10 @@ class TorEngine(
 
         /** What TorService uses when the port is free, which it almost always is. */
         const val FALLBACK_SOCKS_PORT = 9050
+
+        const val PHASE_POLL_MS = 2_000L
+
+        val PROGRESS = Regex("PROGRESS=(\\d+)")
     }
 }
 

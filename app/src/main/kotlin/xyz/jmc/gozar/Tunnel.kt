@@ -164,7 +164,7 @@ object Tunnel {
             engines = engines,
             board = Scoreboard(FileScoreStore(File(context.filesDir, "scoreboard.json")))
                 .also { board = it },
-            prober = HttpProbe(),
+            prober = HttpProbe(log = ::note),
             scope = scope,
             log = ::note,
             onSwitch = { session -> wire(context, session) },

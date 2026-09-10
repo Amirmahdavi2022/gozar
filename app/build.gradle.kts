@@ -45,6 +45,23 @@ android {
 
     buildFeatures { compose = true }
 
+    // One key, committed, used by every build.
+    //
+    // Android refuses to install an update signed by a different key than the copy already on the
+    // phone, and a debug build signs with a keystore the build machine generates on the spot — so
+    // every ci build came out with a different signature and every install meant uninstalling
+    // first, which also wipes the endpoint pool and the scoreboard the app spent a connect
+    // learning. There is nothing to protect here: this key signs a debug build that anyone can
+    // rebuild from this repo. The release key, when there is one, will not live in git.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = rootProject.file("signing/gozar.jks")
+            storePassword = "gozarsign"
+            keyAlias = "gozar"
+            keyPassword = "gozarsign"
+        }
+    }
+
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
 

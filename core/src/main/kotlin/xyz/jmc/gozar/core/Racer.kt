@@ -99,17 +99,23 @@ class Racer(
                     delay(index * LAUNCH_STAGGER_MS)
 
                     val startedAt = clock()
+
+                    // Carried out rather than logged inside, because a cancelled block cannot
+                    // report anything and "it timed out" was being printed for every failure,
+                    // including ones that had already been diagnosed a line earlier.
+                    var reason = "ran out of time after ${engine.deadlineMs / 1000}s"
+
                     val runner = withTimeoutOrNull(engine.deadlineMs) {
                         val session = try {
                             engine.start()
                         } catch (e: Exception) {
-                            log("${engine.name} failed to start: ${e.message}")
+                            reason = "could not start: ${e.message}"
                             return@withTimeoutOrNull null
                         }
 
                         // Up is not the same as working.
                         if (!prober.through(session.socksPort)) {
-                            log("${engine.name} started but carried nothing")
+                            reason = "came up on port ${session.socksPort} and carried nothing"
                             engine.stop()
                             return@withTimeoutOrNull null
                         }
@@ -118,7 +124,7 @@ class Racer(
                     }
 
                     if (runner == null) {
-                        log("${engine.name} did not make it inside ${engine.deadlineMs / 1000}s")
+                        log("${engine.name} ${reason}")
                         engine.stop()
                         board.record(network, engine.name, ok = false, tookMs = 0)
                     } else {

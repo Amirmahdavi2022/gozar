@@ -32,6 +32,7 @@ class HttpProbe(
         "http://cp.cloudflare.com/generate_204",
     ),
     private val timeoutMs: Int = 8_000,
+    private val log: (String) -> Unit = {},
 ) : Prober {
 
     override suspend fun through(socksPort: Int): Boolean = withContext(Dispatchers.IO) {
@@ -44,9 +45,13 @@ class HttpProbe(
                 conn.readTimeout = timeoutMs
                 conn.getInputStream().use { it.read() }
                 return@withContext true
-            } catch (_: IOException) {
-                // Try the next one. A single unreachable target says nothing;
-                // all of them failing says the tunnel is dead.
+            } catch (e: IOException) {
+                // Named rather than swallowed. "Connection refused" instantly means nothing is
+                // listening on that port at all; a timeout means something is listening and the
+                // far side never answered. Those are opposite problems and they used to look
+                // identical from outside.
+                log("probe to ${target.substringAfter("//").substringBefore("/")} failed: "
+                    + "${e.javaClass.simpleName}: ${e.message}")
             }
         }
         false
