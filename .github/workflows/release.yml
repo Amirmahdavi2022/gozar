@@ -1,0 +1,94 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to publish as'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: false
+
+      - name: Locate the NDK
+        run: |
+          ndk="${ANDROID_NDK_LATEST_HOME:-}"
+          [ -d "$ndk" ] || ndk="${ANDROID_NDK_HOME:-}"
+          [ -d "$ndk" ] || ndk="${ANDROID_NDK_ROOT:-}"
+          if [ ! -d "$ndk" ]; then
+            ndk="$(ls -d "$ANDROID_HOME"/ndk/* 2>/dev/null | sort -V | tail -1 || true)"
+          fi
+          [ -d "$ndk" ] || { echo "no ndk on this runner"; exit 1; }
+          echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
+
+      - name: Build the native programs
+        run: bash scripts/fetch-native.sh
+
+      - name: Fetch the seed endpoint list
+        run: bash scripts/fetch-seed.sh
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10'
+
+      - name: Build
+        run: gradle --no-daemon :core:build :app:assembleRelease
+
+      # A release that quietly went out without a native program in it would be an app that
+      # installs, opens, and cannot connect on the one device nobody can debug — the user's.
+      - name: Check the apk carries everything
+        run: |
+          apk=$(find app/build/outputs/apk/release -name '*universal*.apk' -o -name '*.apk' | head -1)
+          for item in libhev-socks5-tunnel.so libxray.so libbyedpi.so assets/seed.txt; do
+            unzip -l "$apk" | grep -q "$item" || { echo "$item is missing from $apk"; exit 1; }
+          done
+
+      - name: Name the files after the tag
+        id: stage
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          mkdir -p out
+          for apk in app/build/outputs/apk/release/*.apk; do
+            case "$apk" in
+              *arm64*)   name="Gozar-VPN-$tag-arm64-v8a.apk" ;;
+              *armeabi*) name="Gozar-VPN-$tag-armeabi-v7a.apk" ;;
+              *x86_64*)  name="Gozar-VPN-$tag-x86_64.apk" ;;
+              *)         name="Gozar-VPN-$tag-Universal.apk" ;;
+            esac
+            cp "$apk" "out/$name"
+          done
+          cd out && sha256sum *.apk > SHA256SUMS && ls -la
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.stage.outputs.tag }}
+          name: Gozar VPN ${{ steps.stage.outputs.tag }}
+          files: out/*
+          generate_release_notes: false
+          body: |
+            Grab **Gozar-VPN-${{ steps.stage.outputs.tag }}-Universal.apk** if you're not sure which one you need — it installs on any phone.
+
+            The per-architecture builds are smaller if you know what your phone is.
+
+            `SHA256SUMS` has the checksums if you want to verify what you downloaded.

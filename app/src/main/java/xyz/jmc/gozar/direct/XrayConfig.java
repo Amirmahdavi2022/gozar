@@ -98,7 +98,43 @@ final class XrayConfig {
         switch (endpoint.protocol) {
             case "vless":
             case "trojan":
+                return true;
             case "ss":
+                return supportedCipher(endpoint.id);
+            default:
+                return false;
+        }
+    }
+
+    /**
+     * Whether this core would accept the cipher an ss:// line carries.
+     *
+     * 🚨 Checked here rather than left to the core, because the core's answer is all-or-nothing.
+     * A round puts many endpoints in one document, and a single method it does not recognise makes
+     * it reject the whole file — every other endpoint in that round dies for one bad line, and the
+     * log reads as "nothing in the pool answered" when in truth nothing in the pool was ever
+     * dialled. The feeds do republish junk, so this has to be caught before the document is built.
+     *
+     * The list is the AEAD set Xray implements, plus the two 2022 forms. Anything else — the
+     * retired stream ciphers, a typo, a line whose credential never decoded — is dropped.
+     */
+    private static boolean supportedCipher(String credential) {
+        int colon = credential.indexOf(':');
+        if (colon <= 0) return false;
+        String method = credential.substring(0, colon).trim().toLowerCase(Locale.US);
+        switch (method) {
+            case "aes-128-gcm":
+            case "aes-192-gcm":
+            case "aes-256-gcm":
+            case "chacha20-poly1305":
+            case "chacha20-ietf-poly1305":
+            case "xchacha20-poly1305":
+            case "xchacha20-ietf-poly1305":
+            case "2022-blake3-aes-128-gcm":
+            case "2022-blake3-aes-256-gcm":
+            case "2022-blake3-chacha20-poly1305":
+            case "none":
+            case "plain":
                 return true;
             default:
                 return false;

@@ -158,8 +158,18 @@ final class ProxyConfig {
         // the password. A corrupted password is worse than a skipped line - it produces an endpoint
         // that looks fine and can never authenticate.
         if (credential.indexOf('%') >= 0) credential = decode(credential);
-        String decodedCredential = base64(credential);
-        if (decodedCredential != null) credential = decodedCredential;
+
+        // 🚨 Only decode when it is actually encoded, and a colon is what settles that. The two
+        // shapes are base64(method:password)@host and the plain method:password@host, and the
+        // base64 alphabet contains no colon at all — so a credential with one in it is already
+        // plain text. Decoding it anyway usually SUCCEEDS, because most strings are valid base64
+        // by length, and hands back binary noise in place of a perfectly good cipher name. That
+        // is where "unknown cipher method: <mojibake>" came from, and one such line is enough to
+        // make the core refuse an entire round of thirty-two endpoints.
+        if (credential.indexOf(':') < 0) {
+            String decodedCredential = base64(credential);
+            if (decodedCredential != null) credential = decodedCredential;
+        }
 
         String hostPort = rest.substring(at + 1);
         int colon = hostPort.lastIndexOf(':');
@@ -167,7 +177,30 @@ final class ProxyConfig {
         String host = hostPort.substring(0, colon);
         int port = readPort(hostPort.substring(colon));
         if (host.isEmpty() || port <= 0 || port > 65535) return null;
-        return new ProxyConfig("ss", host, port, credential, label, params, raw);
+
+        // 🚨 Several pools publish VLESS lines under the ss:// scheme — a whole "shadowsocks" file
+        // of them, in one case. They are recognisable beyond doubt: shadowsocks userinfo is
+        // method:password and never a UUID, and shadowsocks has no reality key, no flow and no
+        // transport type. Read literally they are junk that gets thrown away; read for what they
+        // are they were, in the seed shipped with this build, more endpoints than everything else
+        // in the pool put together. The scheme is a label the feed got wrong, not evidence.
+        String protocol = isUuid(credential) ? "vless" : "ss";
+        return new ProxyConfig(protocol, host, port, credential, label, params, raw);
+    }
+
+    /** The 8-4-4-4-12 shape, which a method:password credential can never take. */
+    private static boolean isUuid(String value) {
+        if (value == null || value.length() != 36) return false;
+        for (int i = 0; i < 36; i++) {
+            char c = value.charAt(i);
+            boolean dash = i == 8 || i == 13 || i == 18 || i == 23;
+            if (dash) {
+                if (c != '-') return false;
+            } else if (Character.digit(c, 16) < 0) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static int readPort(String withColon) {

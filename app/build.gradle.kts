@@ -14,8 +14,8 @@ android {
         applicationId = "xyz.jmc.gozar"
         minSdk = 24
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "1.0.0"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
@@ -33,6 +33,12 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
+
+            // Signed with the same key as the debug builds, deliberately. Android refuses an
+            // update signed by a different key, so switching keys here would mean every existing
+            // installation has to be removed first — and removing it wipes the endpoint pool and
+            // the scoreboard the app spent a connect earning.
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 
