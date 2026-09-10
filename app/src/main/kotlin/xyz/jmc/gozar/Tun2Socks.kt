@@ -28,7 +28,7 @@ class Tun2Socks(private val filesDir: File) : TrafficSource {
      *
      * The cost is a busier file, which is nothing next to another round of guessing.
      */
-    private val logFile = File(filesDir, "tunnel.log").also { Diary.include("the native tunnel", it) }
+    private val logFile = File(filesDir, "tunnel.log")
 
     fun start(tunFd: Int, socksPort: Int, note: (String) -> Unit = {}): Boolean {
         if (running) stop()
