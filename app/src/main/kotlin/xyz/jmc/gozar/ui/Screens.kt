@@ -52,11 +52,12 @@ import xyz.jmc.gozar.core.Support
 private enum class Screen { HOME, SETTINGS, ABOUT }
 
 @Composable
-fun GozarRoot() {
+fun GozarRoot(onToggle: () -> Unit) {
     var screen by remember { mutableStateOf(Screen.HOME) }
 
     when (screen) {
         Screen.HOME -> HomeScaffold(
+            onToggle = onToggle,
             onSettings = { screen = Screen.SETTINGS },
             onAbout = { screen = Screen.ABOUT },
         )
@@ -66,7 +67,7 @@ fun GozarRoot() {
 }
 
 @Composable
-private fun HomeScaffold(onSettings: () -> Unit, onAbout: () -> Unit) {
+private fun HomeScaffold(onToggle: () -> Unit, onSettings: () -> Unit, onAbout: () -> Unit) {
     val context = LocalContext.current
 
     Column(Modifier.fillMaxSize()) {
@@ -114,7 +115,7 @@ private fun HomeScaffold(onSettings: () -> Unit, onAbout: () -> Unit) {
             }
         }
 
-        GozarScreen()
+        GozarScreen(onToggle = onToggle)
     }
 }
 

@@ -5,6 +5,9 @@
     <string name="cancel">Cancel</string>
     <string name="disconnect">Disconnect</string>
     <string name="tap_to_start">Tap to start</string>
+    <string name="waiting_1">Looking for a way out</string>
+    <string name="waiting_2">Trying another route</string>
+    <string name="waiting_3">Still looking</string>
     <string name="youre_through">You\'re through</string>
     <string name="no_way_out">Nothing is getting out right now</string>
     <string name="connected_for">connected for</string>

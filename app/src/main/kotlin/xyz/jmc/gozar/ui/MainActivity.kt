@@ -2,7 +2,13 @@ package xyz.jmc.gozar.ui
 
 import android.content.Intent
 import android.net.Uri
+import android.content.Intent
+import android.net.VpnService
+import android.os.Build
 import android.os.Bundle
+import androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult
+import xyz.jmc.gozar.GozarVpnService
+import xyz.jmc.gozar.Tunnel
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.animation.animateColorAsState
@@ -31,8 +37,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.res.stringResource
+import xyz.jmc.gozar.R
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -45,23 +52,67 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.viewmodel.compose.viewModel
 import xyz.jmc.gozar.core.Support
 
 class MainActivity : ComponentActivity() {
+
+    /**
+     * Android will not let an app build a tun without the user agreeing to it
+     * first, and that agreement is a separate screen we have to be sent back
+     * from. So connecting is two steps, and the second one only runs if they
+     * said yes.
+     */
+    private val vpnConsent = registerForActivityResult(StartActivityForResult()) { result ->
+        if (result.resultCode == RESULT_OK) startTunnel()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
             GozarTheme {
-                Surface(color = GozarColors.Paper) { GozarRoot() }
+                Surface(color = GozarColors.Paper) {
+                    GozarRoot(onToggle = ::toggleTunnel)
+                }
             }
+        }
+    }
+
+    private fun toggleTunnel() {
+        if (Tunnel.phase.value != Tunnel.Phase.DOWN) {
+            startService(
+                Intent(this, GozarVpnService::class.java).setAction(GozarVpnService.ACTION_STOP)
+            )
+            return
+        }
+
+        val consent = VpnService.prepare(this)
+        if (consent == null) startTunnel() else vpnConsent.launch(consent)
+    }
+
+    private fun startTunnel() {
+        val intent = Intent(this, GozarVpnService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent)
+        } else {
+            startService(intent)
         }
     }
 }
 
 @Composable
-fun GozarScreen(vm: GozarViewModel = viewModel()) {
-    val state by vm.state.collectAsState()
+fun GozarScreen(onToggle: () -> Unit) {
+    val state = rememberTunnelState(
+        WaitingNotes(
+            idle = stringResource(R.string.tap_to_start),
+            waiting = listOf(
+                stringResource(R.string.waiting_1),
+                stringResource(R.string.waiting_2),
+                stringResource(R.string.waiting_3),
+            ),
+            connected = stringResource(R.string.youre_through),
+            failed = stringResource(R.string.no_way_out),
+        )
+    )
     val context = LocalContext.current
     val connected = state.phase == UiState.Phase.CONNECTED
     val working = state.phase == UiState.Phase.CONNECTING
@@ -74,7 +125,7 @@ fun GozarScreen(vm: GozarViewModel = viewModel()) {
 
         Spacer(Modifier.weight(1f))
 
-        ConnectButton(connected = connected, working = working, onClick = vm::toggle)
+        ConnectButton(connected = connected, working = working, onClick = onToggle)
 
         Spacer(Modifier.height(26.dp))
 
