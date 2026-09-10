@@ -117,6 +117,7 @@ internal class XrayEngine(
     private fun search(binary: File, modes: IntArray): XrayConfig.Attempt? {
         val now = System.currentTimeMillis()
         val tried = mutableSetOf<String>()
+        log("pool holds ${pool.size()} endpoints")
 
         for (round in 0 until MAX_ROUNDS) {
             val candidates = nextCandidates(tried, now, StealthBatch.candidatesFor(modes))

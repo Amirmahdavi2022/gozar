@@ -212,7 +212,7 @@ final class XrayConfig {
         // carries UDP only if it implements UDP ASSOCIATE, which is exactly what the carrier does
         // not do, so a UDP resolver would leave every hostname endpoint unresolvable on the one
         // route this engine relies on.
-        json.append("\"dns\":{\"servers\":[\"tcp://1.1.1.1\",\"tcp://8.8.8.8\"],")
+        json.append("\"dns\":{\"servers\":[").append(DNS_SERVERS).append("],")
             .append("\"queryStrategy\":\"UseIP\",\"disableCache\":false},");
 
         String[] hop = carrierHop(carrier);
@@ -266,6 +266,22 @@ final class XrayConfig {
 
         @Override public String toString() { return endpoint + "/" + mode; }
     }
+
+    /**
+     * Where the core resolves endpoint hostnames.
+     *
+     * <p>🚨 Encrypted first, plain last, and the order is the point. A device log from a filtered
+     * network showed every hostname endpoint dying on <code>rcode: 3</code> - NXDOMAIN - from both
+     * plain resolvers. A name that does not exist is not a network fault the core can retry
+     * around; it is an answer, and it was a false one. DNS-over-HTTPS carries the query inside TLS
+     * where that answer cannot be substituted.
+     *
+     * <p>The plain resolvers stay behind it because the core falls through the list in order, so
+     * the worst this can do is what already happens today. Endpoints given as bare addresses never
+     * touch any of this, which is most of a public pool.
+     */
+    static final String DNS_SERVERS =
+        "\"https://1.1.1.1/dns-query\",\"https://dns.google/dns-query\",\"tcp://1.1.1.1\",\"tcp://8.8.8.8\"";
 
     /** The inbound tag for attempt {@code index}. Paired with {@link #outTag}. */
     static String inTag(int index) { return "in-" + index; }
@@ -368,7 +384,7 @@ final class XrayConfig {
         // Same reasoning as the single-endpoint config: the binary has no /etc/resolv.conf, and
         // these queries have to be answerable before any tunnel exists, so they go over TCP to a
         // route that is up already.
-        json.append("\"dns\":{\"servers\":[\"tcp://1.1.1.1\",\"tcp://8.8.8.8\"],")
+        json.append("\"dns\":{\"servers\":[").append(DNS_SERVERS).append("],")
             .append("\"queryStrategy\":\"UseIP\",\"disableCache\":false},");
 
         json.append("\"outbounds\":[");

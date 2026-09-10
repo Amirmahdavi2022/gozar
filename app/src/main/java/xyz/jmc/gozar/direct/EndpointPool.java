@@ -24,8 +24,20 @@ import java.util.Map;
  */
 final class EndpointPool {
 
-    /** How many endpoints we keep warm. Beyond this the tail is never reached in practice. */
-    static final int KEEP = 20;
+    /**
+     * How many endpoints are kept on disk.
+     *
+     * <p>🚨 This was twenty, and twenty was the reason the engine kept running out of things to
+     * try. A refresh brings back four hundred, the round that tests them binds forty-eight ports
+     * for about eight seconds, and there are four rounds - so the search has room for roughly two
+     * hundred endpoints and was being handed twenty. A device log showed it: nine candidates in
+     * round one, then "no candidates left after 1 rounds", with three rounds of budget unused.
+     *
+     * <p>The saved list is also the only way back online on a network where nothing can be
+     * fetched, so a bigger one is worth more than the disk it costs: two hundred entries is under
+     * fifty kilobytes.
+     */
+    static final int KEEP = 200;
 
     /** One endpoint plus what this device has learned about it. */
     static final class Entry {
