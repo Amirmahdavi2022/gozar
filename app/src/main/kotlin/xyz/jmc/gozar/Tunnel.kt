@@ -19,6 +19,7 @@ import xyz.jmc.gozar.engines.BridgeStore
 import xyz.jmc.gozar.direct.FilePoolStore
 import xyz.jmc.gozar.direct.PoolStore
 import xyz.jmc.gozar.direct.Provisioner
+import xyz.jmc.gozar.direct.count
 import xyz.jmc.gozar.engines.defaultEngines
 import java.io.File
 
@@ -101,7 +102,7 @@ object Tunnel {
      */
     private fun provision(socksPort: Int) {
         val store = pool ?: return
-        val current = store.load().size()
+        val current = store.count()
         if (current >= HEALTHY_POOL) return
 
         scope.launch {

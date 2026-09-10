@@ -28,3 +28,11 @@ internal class FilePoolStore(private val file: File) : PoolStore {
         runCatching { file.writeText(pool.serialise()) }
     }
 }
+
+/**
+ * How many endpoints are on file.
+ *
+ * Here rather than at the call site because the pool type is deliberately package-private — the
+ * rest of the app has no business handling endpoints, only knowing whether there are any.
+ */
+internal fun PoolStore.count(): Int = load().size()
