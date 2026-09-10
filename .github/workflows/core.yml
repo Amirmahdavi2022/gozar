@@ -28,10 +28,24 @@ jobs:
           go-version: '1.26'
           cache: false
 
-      - name: Install the NDK
+      # The runner image already ships an NDK. Using it beats installing one:
+      # sdkmanager on a fresh image wants a licence answer, and a step that
+      # waits for stdin looks exactly like a step that is broken.
+      - name: Locate the NDK
         run: |
-          sdkmanager --install "ndk;27.2.12479018" > /dev/null
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+          ndk="${ANDROID_NDK_LATEST_HOME:-}"
+          [ -d "$ndk" ] || ndk="${ANDROID_NDK_HOME:-}"
+          [ -d "$ndk" ] || ndk="${ANDROID_NDK_ROOT:-}"
+          if [ ! -d "$ndk" ]; then
+            ndk="$(ls -d "$ANDROID_HOME"/ndk/* 2>/dev/null | sort -V | tail -1 || true)"
+          fi
+          if [ ! -d "$ndk" ]; then
+            yes | sdkmanager --install "ndk;27.2.12479018" > /dev/null
+            ndk="$ANDROID_HOME/ndk/27.2.12479018"
+          fi
+          [ -d "$ndk" ] || { echo "no ndk on this runner"; exit 1; }
+          echo "using $ndk"
+          echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
 
       - name: Build the native programs
         run: bash scripts/fetch-native.sh
