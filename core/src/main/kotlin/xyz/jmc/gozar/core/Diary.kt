@@ -44,6 +44,15 @@ object Diary {
     fun attach(directory: File) {
         current = File(directory, "session.log")
         previous = File(directory, "previous.log")
+
+        // Picked up rather than started empty. After a crash the process is new and this buffer is
+        // not, but the file on disk still holds everything the dead process wrote — and [text]
+        // prefers the buffer, so starting empty would hide the very session worth reading behind
+        // whatever the new process happened to log first.
+        runCatching {
+            val existing = current?.takeIf { it.exists() }?.readLines().orEmpty()
+            existing.filter { it.isNotBlank() }.takeLast(KEEP).forEach { lines.addLast(it) }
+        }
     }
 
     @Synchronized

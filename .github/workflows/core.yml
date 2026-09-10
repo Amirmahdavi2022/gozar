@@ -50,6 +50,12 @@ jobs:
       - name: Build the native programs
         run: bash scripts/fetch-native.sh
 
+      # The fast engine will not start with an empty pool, and it cannot fill one without a tunnel
+      # already up. Shipping a list is what breaks that circle. Fails the build if it comes back
+      # too small, because an apk that quietly contains no seed is Tor-only again and nothing says so.
+      - name: Fetch the seed endpoint list
+        run: bash scripts/fetch-seed.sh
+
       # There is no wrapper in this repo on purpose: it is committed from a
       # phone. So Gradle itself has to be installed here.
       - uses: gradle/actions/setup-gradle@v4
@@ -78,6 +84,10 @@ jobs:
               exit 1
             fi
           done
+          if ! unzip -l "$apk" | grep -q 'assets/seed.txt'; then
+            echo "the seed endpoint list is missing from the apk"
+            exit 1
+          fi
 
       - name: Keep the apk
         uses: actions/upload-artifact@v4

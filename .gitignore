@@ -7,3 +7,7 @@ local.properties
 
 # Built from source by scripts/fetch-native.sh on every build, never committed.
 app/src/main/jniLibs/
+
+# Written at build time by scripts/fetch-seed.sh from public lists. Generated, not authored, and
+# stale within the hour — committing it would put a rotting copy of someone else's feed in git.
+app/src/main/assets/seed.txt

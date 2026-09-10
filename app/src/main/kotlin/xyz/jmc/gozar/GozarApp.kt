@@ -1,6 +1,9 @@
 package xyz.jmc.gozar
 
+import android.app.ActivityManager
 import android.app.Application
+import android.app.ApplicationExitInfo
+import android.os.Build
 import xyz.jmc.gozar.core.Diary
 
 /**
@@ -29,6 +32,13 @@ class GozarApp : Application() {
         // happen and again after it, every time. That is startup, and nowhere else.
         Diary.include("the native tunnel", java.io.File(filesDir, "tunnel.log"))
 
+        // 🚨 The one failure the handler below can never record: a crash in native code. There is
+        // no exception, no thread to catch it on, and the process is simply gone — which is what
+        // the user sees as the app vanishing with a log that stops mid-sentence. Android keeps
+        // its own record of why a process died, tombstone and all, and it survives into the next
+        // launch. Reading it here is the difference between knowing and guessing.
+        runCatching { recordLastExit() }
+
         val existing = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, error ->
             runCatching { Diary.crash(thread.name, error) }
@@ -36,5 +46,41 @@ class GozarApp : Application() {
             // looks alive and behaves like nothing works, which is worse than closing.
             existing?.uncaughtException(thread, error)
         }
+    }
+
+    /**
+     * Folds Android's own account of how this app last died into the log, once, at startup.
+     *
+     * Only worth reporting when the process was killed rather than closed: an ordinary exit is
+     * noise. A native crash carries a description that names the signal and the library, which is
+     * exactly the sentence that has been missing.
+     */
+    private fun recordLastExit() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+
+        val manager = getSystemService(ActivityManager::class.java) ?: return
+        val last = manager.getHistoricalProcessExitReasons(packageName, 0, 1).firstOrNull() ?: return
+
+        val cause = when (last.reason) {
+            ApplicationExitInfo.REASON_CRASH_NATIVE -> "a crash in native code"
+            ApplicationExitInfo.REASON_CRASH -> "an uncaught exception"
+            ApplicationExitInfo.REASON_ANR -> "the app stopped responding"
+            ApplicationExitInfo.REASON_LOW_MEMORY -> "the phone running out of memory"
+            ApplicationExitInfo.REASON_SIGNALED -> "a signal (${last.status})"
+            // Everything else is the app being closed, swapped out or updated. Not worth a line.
+            else -> return
+        }
+
+        Diary.write("the last run ended in $cause: ${last.description ?: "no description"}")
+
+        // Only the native ones carry a trace, and only from Android 12.
+        if (last.reason != ApplicationExitInfo.REASON_CRASH_NATIVE) return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        val trace = runCatching {
+            last.traceInputStream?.bufferedReader()?.use { reader ->
+                reader.readLines().take(60).joinToString("\n")
+            }
+        }.getOrNull()
+        if (!trace.isNullOrBlank()) Diary.write("what android recorded about it:\n" + trace)
     }
 }

@@ -117,6 +117,14 @@ object Tunnel {
     /** Below this the list is worth refreshing; above it, leave the tunnel alone. */
     private const val HEALTHY_POOL = 60
 
+    /**
+     * The endpoint list shipped in the apk, written at build time by scripts/fetch-seed.sh.
+     *
+     * Stale by the hour it is installed, and that is expected: it only has to be good enough to
+     * get one tunnel up, after which the app refreshes the pool itself through that tunnel.
+     */
+    private const val SEED_ASSET = "seed.txt"
+
     fun tearDown() {
 
         tun2socks?.stop()
@@ -154,7 +162,14 @@ object Tunnel {
         ).also { controller = it }
 
         val bridges = BridgeStore(context)
-        val store = pool ?: FilePoolStore(File(context.filesDir, "pool.txt")).also { pool = it }
+        val store = pool ?: FilePoolStore(
+            File(context.filesDir, "pool.txt"),
+            seed = {
+                runCatching {
+                    context.assets.open(SEED_ASSET).bufferedReader().use { it.readText() }
+                }.getOrNull()
+            },
+        ).also { pool = it }
         return defaultEngines(context, ipt, { bridges.linesFor(it) }, store, ::note)
     }
 
