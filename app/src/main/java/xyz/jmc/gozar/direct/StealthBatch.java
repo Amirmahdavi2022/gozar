@@ -45,12 +45,32 @@ final class StealthBatch {
     static final int MAX_ATTEMPTS = 48;
 
     /**
-     * Endpoints one round may carry.
+     * The most endpoints one round may ever carry.
      *
-     * <p>Three routes per endpoint at most, so this and {@link #MAX_ATTEMPTS} agree: sixteen
-     * endpoints tried every way is exactly forty-eight ports.
+     * <p>Equal to {@link #MAX_ATTEMPTS} because that is the ceiling: a round on a network with a
+     * single usable route spends one port per endpoint, so forty-eight endpoints is forty-eight
+     * ports. How many a round actually takes depends on how many routes it has, which is what
+     * {@link #candidatesFor(int[])} answers.
      */
-    static final int MAX_CANDIDATES = 16;
+    static final int MAX_CANDIDATES = MAX_ATTEMPTS;
+
+    /**
+     * How many endpoints a round should collect, given the routes this network can use.
+     *
+     * <p>🔑 This used to be the constant sixteen, which was right when there were three routes
+     * (sixteen endpoints tried every way is exactly forty-eight ports) and wrong ever since. With
+     * two routes a round bound thirty-two of its forty-eight ports and left the rest idle; with
+     * one route it bound sixteen and left two thirds idle. The cost of a round is the ports it
+     * binds, and that cost was measured at forty-eight, so the idle ports were search we had
+     * already paid for and were not doing.
+     *
+     * <p>Nothing here can exceed {@link #MAX_ATTEMPTS} — the division is what guarantees it, and
+     * {@link #plan(List, int[], int)} enforces it again on the way out.
+     */
+    static int candidatesFor(int[] modes) {
+        int routes = (modes == null || modes.length == 0) ? 1 : modes.length;
+        return Math.max(1, Math.min(MAX_CANDIDATES, MAX_ATTEMPTS / routes));
+    }
 
     /**
      * The attempts for one round: every candidate, on every route this network can use.
@@ -79,10 +99,11 @@ final class StealthBatch {
 
     /** {@link #plan} with the standard caps. */
     static List<XrayConfig.Attempt> plan(List<ProxyConfig> candidates, int[] modes) {
+        int room = candidatesFor(modes);
         List<ProxyConfig> capped = new ArrayList<>();
         if (candidates != null) {
             for (ProxyConfig candidate : candidates) {
-                if (capped.size() >= MAX_CANDIDATES) break;
+                if (capped.size() >= room) break;
                 capped.add(candidate);
             }
         }

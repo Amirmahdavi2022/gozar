@@ -119,7 +119,7 @@ internal class XrayEngine(
         val tried = mutableSetOf<String>()
 
         for (round in 0 until MAX_ROUNDS) {
-            val candidates = nextCandidates(tried, now)
+            val candidates = nextCandidates(tried, now, StealthBatch.candidatesFor(modes))
             if (candidates.isEmpty()) {
                 log("no candidates left after ${round} rounds")
                 return null
@@ -156,10 +156,10 @@ internal class XrayEngine(
         return null
     }
 
-    private fun nextCandidates(tried: MutableSet<String>, now: Long): List<ProxyConfig> {
-        val out = ArrayList<ProxyConfig>(StealthBatch.MAX_CANDIDATES)
+    private fun nextCandidates(tried: MutableSet<String>, now: Long, limit: Int): List<ProxyConfig> {
+        val out = ArrayList<ProxyConfig>(limit)
         for (entry in pool.ranked(now)) {
-            if (out.size >= StealthBatch.MAX_CANDIDATES) break
+            if (out.size >= limit) break
             val candidate = entry.config
             if (entry.score(now) < 0) continue                 // benched
             if (!XrayConfig.supports(candidate)) continue
