@@ -47,6 +47,13 @@ android {
 
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+
+        // The proxy core and the shaping proxy are programs, not libraries, and they are started
+        // with ProcessBuilder rather than loaded. That only works if the installer has unpacked
+        // them onto disk, which is exactly what legacy packaging means. Left on the modern path
+        // they stay compressed inside the apk, nativeLibraryDir holds nothing to execute, and the
+        // engine fails with a file-not-found on a file that is plainly in the build.
+        jniLibs.useLegacyPackaging = true
     }
 }
 

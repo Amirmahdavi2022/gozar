@@ -18,6 +18,8 @@ import org.torproject.jni.TorService
 import xyz.jmc.gozar.core.Engine
 import xyz.jmc.gozar.core.Session
 import xyz.jmc.gozar.core.Shape
+import xyz.jmc.gozar.direct.PoolStore
+import xyz.jmc.gozar.direct.XrayEngine
 import kotlin.coroutines.resume
 
 /**
@@ -237,14 +239,25 @@ class TorEngine(
 /**
  * Builds the engine list.
  *
- * One entry today, and the comment that used to sit here — that four engines
- * looking the same on the wire would be one engine wearing four hats — was
- * right about the danger and wrong about where it was. It was not the shapes
- * that collapsed into one, it was the process.
+ * Two bets, and they are bets on different things rather than two names for one.
+ *
+ * Tor is slow and gets through when nothing else does: three hops of volunteer relays, reached by
+ * whichever pluggable transport answered, and no fixed address for anyone to block. The direct
+ * engine is one hop to a public endpoint speaking what looks like an ordinary TLS session, which
+ * is fast and, being ordinary, is also the first thing a censor learns to spot.
+ *
+ * Nothing is shared between them. Different program, different process, different socket,
+ * different shape on the wire — so a rule that kills one has no reason to touch the other, and
+ * neither can pull the other down. That is what makes holding the loser warm behind the winner
+ * worth anything at all.
  */
-fun defaultEngines(
+internal fun defaultEngines(
     context: Context,
     controller: Controller,
     bridges: (String) -> List<String>,
+    pool: PoolStore,
     log: (String) -> Unit = {},
-): List<Engine> = listOf(TorEngine(context, controller, bridges, log))
+): List<Engine> = listOf(
+    XrayEngine(context, pool, log),
+    TorEngine(context, controller, bridges, log),
+)

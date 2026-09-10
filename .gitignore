@@ -4,3 +4,6 @@ build/
 .gradle/
 local.properties
 .idea/
+
+# Built from source by scripts/fetch-native.sh on every build, never committed.
+app/src/main/jniLibs/

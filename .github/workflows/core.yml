@@ -23,6 +23,33 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: false
+
+      # The runner image already ships an NDK. Using it beats installing one:
+      # sdkmanager on a fresh image wants a licence answer, and a step that
+      # waits for stdin looks exactly like a step that is broken.
+      - name: Locate the NDK
+        run: |
+          ndk="${ANDROID_NDK_LATEST_HOME:-}"
+          [ -d "$ndk" ] || ndk="${ANDROID_NDK_HOME:-}"
+          [ -d "$ndk" ] || ndk="${ANDROID_NDK_ROOT:-}"
+          if [ ! -d "$ndk" ]; then
+            ndk="$(ls -d "$ANDROID_HOME"/ndk/* 2>/dev/null | sort -V | tail -1 || true)"
+          fi
+          if [ ! -d "$ndk" ]; then
+            yes | sdkmanager --install "ndk;27.2.12479018" > /dev/null
+            ndk="$ANDROID_HOME/ndk/27.2.12479018"
+          fi
+          [ -d "$ndk" ] || { echo "no ndk on this runner"; exit 1; }
+          echo "using $ndk"
+          echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
+
+      - name: Build the native programs
+        run: bash scripts/fetch-native.sh
+
       # There is no wrapper in this repo on purpose: it is committed from a
       # phone. So Gradle itself has to be installed here.
       - uses: gradle/actions/setup-gradle@v4
@@ -45,10 +72,12 @@ jobs:
           apk=$(find app/build/outputs/apk/debug -name '*.apk' | head -1)
           echo "apk: $apk"
           unzip -l "$apk" | grep -E 'lib/.*\.so' || true
-          if ! unzip -l "$apk" | grep -q 'libhev-socks5-tunnel.so'; then
-            echo "native tunnel missing from the apk"
-            exit 1
-          fi
+          for lib in libhev-socks5-tunnel.so libxray.so libbyedpi.so; do
+            if ! unzip -l "$apk" | grep -q "$lib"; then
+              echo "$lib is missing from the apk"
+              exit 1
+            fi
+          done
 
       - name: Keep the apk
         uses: actions/upload-artifact@v4
