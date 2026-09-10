@@ -122,7 +122,7 @@ object Diary {
             if (body.isNullOrBlank()) continue
             // Only the tail: these can run to thousands of lines, and the last words are the ones
             // that say how it ended.
-            val tail = body.trim().lines().takeLast(60).joinToString("\n")
+            val tail = body.trim().lines().takeLast(80).joinToString("\n")
             parts += "--- $label ---\n" + tail
         }
 

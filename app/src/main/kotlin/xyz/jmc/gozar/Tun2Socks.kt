@@ -18,9 +18,15 @@ class Tun2Socks(private val filesDir: File) : TrafficSource {
     /**
      * The native tunnel's own log, collected into the diary.
      *
-     * At info rather than warn on purpose: a warning is what it says when something it recognises
-     * goes wrong, and the failures worth catching here are the ones it does not recognise, where
-     * the useful evidence is simply how far through its own startup it got.
+     * 🚨 At debug, and that is the whole point of it. Measured by running this exact binary with
+     * this exact config: at info it prints one line at startup and then nothing at all, so an
+     * empty file is equally consistent with dying immediately and with running perfectly. At debug
+     * it announces each step it completes — tunnel init, mapped dns construct, tunnel run, then a
+     * line per task — so the last line in the file is the last thing it finished. When a library
+     * dies without an exception, "how far did it get" is the only question that can be answered,
+     * and this is the only thing that answers it.
+     *
+     * The cost is a busier file, which is nothing next to another round of guessing.
      */
     private val logFile = File(filesDir, "tunnel.log").also { Diary.include("the native tunnel", it) }
 
@@ -102,8 +108,7 @@ class Tun2Socks(private val filesDir: File) : TrafficSource {
           netmask: $MAPPED_NETMASK
           cache-size: 10000
         misc:
-          task-stack-size: 20480
-          log-level: info
+          log-level: debug
           log-file: ${logFile.absolutePath}
     """.trimIndent() + "\n"
 
