@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
@@ -35,17 +34,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import xyz.jmc.gozar.ConfigStore
 import xyz.jmc.gozar.R
 import xyz.jmc.gozar.core.Support
 
@@ -163,73 +159,27 @@ private fun SubScreen(title: String, onBack: () -> Unit, body: @Composable () ->
 @Composable
 private fun SettingsScreen(onBack: () -> Unit) {
     val context = LocalContext.current
-    val store = remember { ConfigStore(context) }
-    var text by remember { mutableStateOf(store.link.orEmpty()) }
     var note by remember { mutableStateOf<String?>(null) }
 
     SubScreen(title = stringResource(R.string.settings), onBack = onBack) {
         Card {
             Text(
-                stringResource(R.string.own_config),
+                stringResource(R.string.forget_routes),
                 color = GozarColors.Ink,
                 fontSize = 16.sp,
                 fontWeight = FontWeight.SemiBold,
             )
             Spacer(Modifier.height(6.dp))
             Text(
-                stringResource(R.string.own_config_note),
+                stringResource(R.string.forget_routes_note),
                 color = GozarColors.Muted,
                 fontSize = 13.sp,
             )
             Spacer(Modifier.height(14.dp))
-
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(GozarColors.Paper)
-                    .border(1.dp, GozarColors.Hairline, RoundedCornerShape(12.dp))
-                    .padding(12.dp)
-            ) {
-                if (text.isEmpty()) {
-                    Text(
-                        stringResource(R.string.own_config_hint),
-                        color = GozarColors.Muted,
-                        fontSize = 13.sp,
-                        fontFamily = FontFamily.Monospace,
-                    )
-                }
-                BasicTextField(
-                    value = text,
-                    onValueChange = { text = it; note = null },
-                    textStyle = TextStyle(
-                        color = GozarColors.Ink,
-                        fontSize = 13.sp,
-                        fontFamily = FontFamily.Monospace,
-                    ),
-                    cursorBrush = SolidColor(GozarColors.Ember),
-                    modifier = Modifier.fillMaxWidth(),
-                )
+            PillButton(stringResource(R.string.forget), filled = false) {
+                java.io.File(context.filesDir, "scoreboard.json").delete()
+                note = context.getString(R.string.forgotten)
             }
-
-            Spacer(Modifier.height(14.dp))
-
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                PillButton(stringResource(R.string.save), filled = true) {
-                    note = if (text.isBlank() || store.looksUsable(text)) {
-                        store.link = text
-                        context.getString(R.string.saved)
-                    } else {
-                        "That does not look like a config link"
-                    }
-                }
-                PillButton(stringResource(R.string.clear), filled = false) {
-                    text = ""
-                    store.link = null
-                    note = null
-                }
-            }
-
             note?.let {
                 Spacer(Modifier.height(10.dp))
                 Text(it, color = GozarColors.Muted, fontSize = 13.sp)

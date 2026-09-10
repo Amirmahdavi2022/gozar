@@ -21,4 +21,8 @@
     <string name="saved">Saved</string>
     <string name="clear">Clear</string>
     <string name="channel_note">When everything is blocked, fresh routes get posted here</string>
+    <string name="forget_routes">What I learned about your networks</string>
+    <string name="forget_routes_note">Gozar remembers which route worked on each network so it can start there next time. Clearing it makes the next connection slower, not worse.</string>
+    <string name="forget">Forget it</string>
+    <string name="forgotten">Cleared</string>
 </resources>

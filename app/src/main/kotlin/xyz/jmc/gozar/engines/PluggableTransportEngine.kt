@@ -55,13 +55,12 @@ class PluggableTransportEngine(
     override val name: String = transport
 
     /**
-     * Snowflake finds its own way to a proxy through a broker, so it starts
-     * cold. Everything else needs bridge lines first, and getting those is
-     * itself blocked in the places this app is for — so they are fetched
-     * through whichever engine did come up, and only then do these become
-     * startable.
+     * An engine with no bridge lines has nothing to dial, so it is not worth
+     * a place on the starting line. Asked every time rather than fixed at
+     * construction, because lines can arrive at runtime through a tunnel that
+     * is already up.
      */
-    override val needsBootstrap: Boolean = transport != Transport.SNOWFLAKE
+    override val needsBootstrap: Boolean get() = bridges().isEmpty()
 
     @Volatile private var started = false
 
@@ -88,17 +87,20 @@ class PluggableTransportEngine(
 /**
  * Builds the engine list.
  *
- * Order here does not decide anything — the scoreboard does that at launch —
- * but the shapes do. Four engines that all look the same on the wire would be
- * one engine wearing four hats.
+ * Order here decides nothing — the scoreboard does that at launch — but the
+ * shapes do. Four engines that look the same on the wire would be one engine
+ * wearing four hats, and would all die to the same rule on the same evening.
  */
 fun defaultEngines(
     controller: Controller,
     tor: TorDriver,
     bridges: (String) -> List<String>,
 ): List<Engine> = listOf(
-    PluggableTransportEngine(Transport.SNOWFLAKE, Shape.WEBRTC, controller, tor) { bridges(Transport.SNOWFLAKE) },
-    PluggableTransportEngine(Transport.WEBTUNNEL, Shape.HTTPS, controller, tor) { bridges(Transport.WEBTUNNEL) },
-    PluggableTransportEngine(Transport.OBFS4, Shape.RANDOM, controller, tor) { bridges(Transport.OBFS4) },
-    PluggableTransportEngine(Transport.DNSTT, Shape.DNS, controller, tor) { bridges(Transport.DNSTT) },
-)
+    Transport.SNOWFLAKE to Shape.WEBRTC,
+    Transport.WEBTUNNEL to Shape.HTTPS,
+    Transport.MEEK_LITE to Shape.HTTPS,
+    Transport.OBFS4 to Shape.RANDOM,
+    Transport.DNSTT to Shape.DNS,
+).map { (transport, shape) ->
+    PluggableTransportEngine(transport, shape, controller, tor) { bridges(transport) }
+}

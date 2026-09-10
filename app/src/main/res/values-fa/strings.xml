@@ -20,4 +20,8 @@
     <string name="saved">ذخیره شد</string>
     <string name="clear">پاک کردن</string>
     <string name="channel_note">وقتی همه‌چیز بسته شد، مسیرهای تازه اینجا گذاشته می‌شود</string>
+    <string name="forget_routes">چیزهایی که درباره شبکه‌هایت یاد گرفته‌ام</string>
+    <string name="forget_routes_note">گذر یادش می‌ماند روی هر شبکه کدام مسیر جواب داد تا دفعه بعد از همان شروع کند. پاک کردنش فقط اتصال بعدی را کندتر می‌کند، نه بدتر.</string>
+    <string name="forget">پاکش کن</string>
+    <string name="forgotten">پاک شد</string>
 </resources>
