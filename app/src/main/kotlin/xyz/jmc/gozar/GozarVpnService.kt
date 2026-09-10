@@ -7,18 +7,19 @@ import android.content.Intent
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 
 /**
- * Holds the tun device.
- *
- * Routing packets from this tun into the winning engine's SOCKS port is the
- * next piece and is not written yet. It has to be a native tun2socks rather
- * than a Go one: IPtProxy is a gomobile library and an Android app can only
- * carry one of those, so a second Go module would refuse to link.
+ * Owns the tun device and hands it to the tunnel once a way out is found.
  */
 class GozarVpnService : VpnService() {
 
     private var tun: ParcelFileDescriptor? = null
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
@@ -28,24 +29,38 @@ class GozarVpnService : VpnService() {
 
         startForeground(NOTIFICATION_ID, notification())
 
-        tun = Builder()
+        val fd = establish() ?: run {
+            teardown()
+            return START_NOT_STICKY
+        }
+
+        scope.launch {
+            val up = Tunnel.bringUp(this@GozarVpnService, fd)
+            if (!up) teardown()
+        }
+
+        return START_STICKY
+    }
+
+    private fun establish(): Int? {
+        val descriptor = Builder()
             .setSession(getString(R.string.app_name))
             .setMtu(1500)
             .addAddress("10.7.0.1", 32)
             .addDnsServer("1.1.1.1")
             .addRoute("0.0.0.0", 0)
-            // Never route our own traffic through ourselves. Without this the
-            // transports would try to reach their broker through the tunnel
-            // they are supposed to be building.
-            .also { builder ->
-                runCatching { builder.addDisallowedApplication(packageName) }
-            }
+            // Our own traffic must not go through our own tunnel. Without this
+            // the transports would try to reach their broker through the thing
+            // they are supposed to be building, and nothing would ever start.
+            .also { builder -> runCatching { builder.addDisallowedApplication(packageName) } }
             .establish()
 
-        return START_STICKY
+        tun = descriptor
+        return descriptor?.fd
     }
 
     private fun teardown() {
+        Tunnel.tearDown()
         runCatching { tun?.close() }
         tun = null
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -54,7 +69,13 @@ class GozarVpnService : VpnService() {
 
     override fun onDestroy() {
         teardown()
+        scope.cancel()
         super.onDestroy()
+    }
+
+    override fun onRevoke() {
+        teardown()
+        super.onRevoke()
     }
 
     private fun notification(): Notification {
@@ -72,7 +93,7 @@ class GozarVpnService : VpnService() {
         }
         return builder
             .setContentTitle(getString(R.string.app_name))
-            .setContentText("Connected")
+            .setContentText("Finding a way out")
             .setSmallIcon(android.R.drawable.ic_lock_lock)
             .setOngoing(true)
             .build()

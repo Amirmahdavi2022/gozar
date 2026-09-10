@@ -1,4 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Gozar</string>
+    <string name="connect">Connect</string>
+    <string name="cancel">Cancel</string>
+    <string name="disconnect">Disconnect</string>
+    <string name="tap_to_start">Tap to start</string>
+    <string name="youre_through">You\'re through</string>
+    <string name="no_way_out">Nothing is getting out right now</string>
+    <string name="connected_for">connected for</string>
+    <string name="support">Support</string>
+    <string name="about">About</string>
+    <string name="settings">Settings</string>
+    <string name="own_config">Your own config</string>
+    <string name="own_config_hint">vless:// or trojan:// or ss://</string>
+    <string name="own_config_note">Pasted here, it gets raced alongside everything else. It usually wins, because it is a direct route.</string>
+    <string name="save">Save</string>
+    <string name="saved">Saved</string>
+    <string name="clear">Clear</string>
+    <string name="channel_note">When everything is blocked, fresh routes get posted here</string>
 </resources>

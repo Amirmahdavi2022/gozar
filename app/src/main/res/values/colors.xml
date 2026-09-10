@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The icon art is a glowing mark on near black, so the adaptive
+         background has to stay dark or the glow loses its ground. -->
+    <color name="icon_background">#0B0B0D</color>
+</resources>

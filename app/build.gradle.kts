@@ -61,6 +61,7 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.animation:animation")
+    implementation("androidx.compose.material:material-icons-core")
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.6")
 
     // Lyrebird (obfs4, meek_lite, webtunnel), Snowflake and DNSTT, wrapped for

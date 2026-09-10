@@ -53,7 +53,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             GozarTheme {
-                Surface(color = GozarColors.Paper) { GozarScreen() }
+                Surface(color = GozarColors.Paper) { GozarRoot() }
             }
         }
     }
@@ -70,8 +70,7 @@ fun GozarScreen(vm: GozarViewModel = viewModel()) {
         modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Spacer(Modifier.height(36.dp))
-        Header(connected = connected, working = working)
+        StatusLine(connected = connected, working = working)
 
         Spacer(Modifier.weight(1f))
 
@@ -106,19 +105,12 @@ fun GozarScreen(vm: GozarViewModel = viewModel()) {
 }
 
 @Composable
-private fun Header(connected: Boolean, working: Boolean) {
+private fun StatusLine(connected: Boolean, working: Boolean) {
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
+        horizontalArrangement = Arrangement.End,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(
-            text = "Gozar",
-            color = GozarColors.Ink,
-            fontSize = 21.sp,
-            fontWeight = FontWeight.SemiBold,
-        )
-
         val dot by animateColorAsState(
             targetValue = when {
                 connected -> GozarColors.Good
@@ -129,19 +121,17 @@ private fun Header(connected: Boolean, working: Boolean) {
             label = "statusDot",
         )
 
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(8.dp).clip(CircleShape).background(dot))
-            Spacer(Modifier.width(8.dp))
-            Text(
-                text = when {
-                    connected -> "on"
-                    working -> "working"
-                    else -> "off"
-                },
-                color = GozarColors.Muted,
-                fontSize = 13.sp,
-            )
-        }
+        Box(Modifier.size(8.dp).clip(CircleShape).background(dot))
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = when {
+                connected -> "on"
+                working -> "working"
+                else -> "off"
+            },
+            color = GozarColors.Muted,
+            fontSize = 13.sp,
+        )
     }
 }
 
@@ -294,7 +284,7 @@ private fun FooterLink(highlighted: Boolean, onClick: () -> Unit) {
             Spacer(Modifier.height(4.dp))
         }
         Text(
-            text = Support.CHANNEL_HANDLE,
+            text = handleLtr(),
             color = tint,
             fontSize = 13.sp,
             fontWeight = if (highlighted) FontWeight.SemiBold else FontWeight.Normal,
