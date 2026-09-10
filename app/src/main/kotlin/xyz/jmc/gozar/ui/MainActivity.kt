@@ -2,7 +2,6 @@ package xyz.jmc.gozar.ui
 
 import android.content.Intent
 import android.net.Uri
-import android.content.Intent
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
