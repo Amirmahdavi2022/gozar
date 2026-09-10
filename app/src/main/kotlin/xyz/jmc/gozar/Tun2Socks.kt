@@ -1,6 +1,7 @@
 package xyz.jmc.gozar
 
 import hev.htproxy.TProxyService
+import xyz.jmc.gozar.core.Diary
 import java.io.File
 
 /**
@@ -14,14 +15,35 @@ class Tun2Socks(private val filesDir: File) : TrafficSource {
 
     @Volatile private var running = false
 
-    fun start(tunFd: Int, socksPort: Int): Boolean {
+    /**
+     * The native tunnel's own log, collected into the diary.
+     *
+     * At info rather than warn on purpose: a warning is what it says when something it recognises
+     * goes wrong, and the failures worth catching here are the ones it does not recognise, where
+     * the useful evidence is simply how far through its own startup it got.
+     */
+    private val logFile = File(filesDir, "tunnel.log").also { Diary.include("the native tunnel", it) }
+
+    fun start(tunFd: Int, socksPort: Int, note: (String) -> Unit = {}): Boolean {
         if (running) stop()
+
+        // Fresh each time, so what is in it belongs to this attempt and not to the last one.
+        runCatching { logFile.delete() }
 
         val config = File(filesDir, "tun2socks.yml")
         config.writeText(configFor(socksPort))
 
+        // 🚨 The marker matters. Everything past this line is C, and C does not throw: if it dies
+        // there is no exception, no stack and no process left to write anything. A log that simply
+        // stops after the winning engine reads as "the app vanished for no reason", when what it
+        // actually means is "it got exactly this far". Its own log is folded into ours for the
+        // same reason — on the way down, what it wrote about itself is the only account left.
+        note("handing the tun to the native tunnel on port $socksPort")
+
         running = runCatching { TProxyService.TProxyStartService(config.absolutePath, tunFd) }
             .getOrDefault(false)
+
+        note(if (running) "the native tunnel took it" else "the native tunnel refused it")
         return running
     }
 
@@ -81,7 +103,8 @@ class Tun2Socks(private val filesDir: File) : TrafficSource {
           cache-size: 10000
         misc:
           task-stack-size: 20480
-          log-level: warn
+          log-level: info
+          log-file: ${logFile.absolutePath}
     """.trimIndent() + "\n"
 
     companion object {

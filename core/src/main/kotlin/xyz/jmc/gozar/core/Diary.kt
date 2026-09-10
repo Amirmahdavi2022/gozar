@@ -29,11 +29,26 @@ object Diary {
     private var current: File? = null
     private var previous: File? = null
 
+    /**
+     * Logs written by native code we start.
+     *
+     * A crash inside a C library never reaches [crash] — there is no exception, no stack, and the
+     * process is simply gone. What that library wrote about itself on its way down is then the
+     * only account of what happened, so it is collected here rather than left in a file nobody
+     * looks at.
+     */
+    private val included = LinkedHashMap<String, File>()
+
     /** Wired once at startup, before anything can fail. */
     @Synchronized
     fun attach(directory: File) {
         current = File(directory, "session.log")
         previous = File(directory, "previous.log")
+    }
+
+    @Synchronized
+    fun include(label: String, file: File) {
+        included[label] = file
     }
 
     @Synchronized
@@ -101,6 +116,15 @@ object Diary {
             runCatching { current?.takeIf { it.exists() }?.readText() }.getOrNull()?.trim().orEmpty()
         }
         if (now.isNotBlank()) parts += "--- this session ---\n" + now
+
+        for ((label, file) in included) {
+            val body = runCatching { file.takeIf { it.exists() }?.readText() }.getOrNull()
+            if (body.isNullOrBlank()) continue
+            // Only the tail: these can run to thousands of lines, and the last words are the ones
+            // that say how it ended.
+            val tail = body.trim().lines().takeLast(60).joinToString("\n")
+            parts += "--- $label ---\n" + tail
+        }
 
         return if (parts.isEmpty()) "nothing yet" else parts.joinToString("\n\n")
     }
