@@ -244,6 +244,9 @@ final class XrayConfig {
         json.append("\"routing\":{\"domainStrategy\":\"AsIs\",\"rules\":[")
             .append("{\"type\":\"field\",\"inboundTag\":[\"socks-in\"],\"outboundTag\":\"proxy\"},")
             .append("{\"type\":\"field\",\"port\":\"53\",\"outboundTag\":")
+            .append(quote(chained ? CARRIER_TAG : DIRECT_TAG)).append("},")
+            .append("{\"type\":\"field\",\"ip\":[").append(DNS_ADDRESSES)
+            .append("],\"port\":\"443\",\"outboundTag\":")
             .append(quote(chained ? CARRIER_TAG : DIRECT_TAG)).append("}]}}");
         return json.toString();
     }
@@ -281,7 +284,21 @@ final class XrayConfig {
      * touch any of this, which is most of a public pool.
      */
     static final String DNS_SERVERS =
-        "\"https://1.1.1.1/dns-query\",\"https://dns.google/dns-query\",\"tcp://1.1.1.1\",\"tcp://8.8.8.8\"";
+        "\"tcp://1.1.1.1\",\"tcp://8.8.8.8\",\"https://1.1.1.1/dns-query\",\"https://8.8.8.8/dns-query\"";
+
+    /**
+     * The addresses the resolvers above live at, as a routing rule fragment.
+     *
+     * <p>🚨 Encrypted DNS leaves on port 443, so the port-53 rule does not see it and it falls
+     * through to the default outbound - which is the endpoint being tested. A device log caught
+     * exactly that: the query went out as {@code >> out-0} and died on a deadline, through a
+     * tunnel that did not exist yet. Same deadlock the port-53 rule was written to break, one port
+     * number away.
+     *
+     * <p>Both DoH URLs are bare addresses on purpose. A resolver named by hostname would need a
+     * lookup of its own before it could answer one.
+     */
+    static final String DNS_ADDRESSES = "\"1.1.1.1\",\"8.8.8.8\"";
 
     /** The inbound tag for attempt {@code index}. Paired with {@link #outTag}. */
     static String inTag(int index) { return "in-" + index; }
@@ -408,6 +425,9 @@ final class XrayConfig {
         // Every inbound is claimed above, so only the core's own resolver reaches this rule -
         // exactly as in the single-endpoint config, and for the same reason.
         json.append("{\"type\":\"field\",\"port\":\"53\",\"outboundTag\":")
+            .append(quote(needCarrier ? CARRIER_TAG : DIRECT_TAG)).append("},")
+            .append("{\"type\":\"field\",\"ip\":[").append(DNS_ADDRESSES)
+            .append("],\"port\":\"443\",\"outboundTag\":")
             .append(quote(needCarrier ? CARRIER_TAG : DIRECT_TAG)).append("}]}}");
         return json.toString();
     }
