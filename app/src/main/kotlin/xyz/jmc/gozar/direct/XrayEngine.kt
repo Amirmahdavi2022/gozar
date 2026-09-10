@@ -169,19 +169,20 @@ internal class XrayEngine(
         return out
     }
 
-    /** Probes every port in the round at once. Negative means that attempt did not answer. */
-    private fun probeRound(count: Int): LongArray {
-        val out = LongArray(count) { -1L }
-        val threads = (0 until count).map { index ->
-            Thread({
-                out[index] = SocksProbe.latencyMillis(
-                    XrayConfig.SOCKS_LISTEN, StealthBatch.portFor(index), PROBE_TIMEOUT_MS,
-                )
-            }, "probe-$index").apply { isDaemon = true; start() }
+    /**
+     * Probes every port in the round at once. Negative means that attempt did not answer.
+     *
+     * The round ends shortly after the first answer rather than after the last timeout - see
+     * [RoundProbe]. A pool is mostly dead endpoints, and a dead endpoint costs the whole timeout,
+     * so waiting for all of them meant every round cost six seconds even when the winner had
+     * already answered.
+     */
+    private fun probeRound(count: Int): LongArray =
+        RoundProbe.run(count, PROBE_TIMEOUT_MS, RoundProbe.GRACE_MS) { index ->
+            SocksProbe.latencyMillis(
+                XrayConfig.SOCKS_LISTEN, StealthBatch.portFor(index), PROBE_TIMEOUT_MS,
+            )
         }
-        threads.forEach { runCatching { it.join(PROBE_TIMEOUT_MS + 2_000L) } }
-        return out
-    }
 
     private fun launch(binary: File, config: File) {
         val directory = context.filesDir
