@@ -1,15 +1,23 @@
 package xyz.jmc.gozar.core
 
+import java.io.File
+import java.io.PrintWriter
+import java.io.StringWriter
+
 /**
- * The last few hundred lines of what the tunnel actually did.
+ * The last few hundred lines of what the tunnel actually did, kept on disk as well as in memory.
  *
- * This exists because of a lesson learned the expensive way on another app:
- * every question about why a connection failed can only be answered by the one
- * device that was there, and if that device has no way to say what it saw, the
- * answer is guesswork and the next build is a guess too.
+ * This exists because of a lesson learned the expensive way: every question about why a connection
+ * failed can only be answered by the one device that was there, and if that device has no way to
+ * say what it saw, the answer is guesswork and the next build is a guess too.
  *
- * Nothing here is sent anywhere. It is a buffer in memory that a person can
- * copy out of Settings and paste somewhere themselves.
+ * 🚨 On disk is not belt-and-braces. A buffer in memory dies with the process, so the one failure
+ * it can never explain is the process dying — which is exactly the failure that most needs
+ * explaining, and which reads to the user as an empty log and a closed app. The previous session
+ * survives here so the crash that ended it can be read afterwards.
+ *
+ * Nothing is sent anywhere. These are files in the app's own storage that a person can copy out of
+ * Settings and paste somewhere themselves.
  */
 object Diary {
 
@@ -18,20 +26,82 @@ object Diary {
     private val lines = ArrayDeque<String>()
     private var startedAt = 0L
 
+    private var current: File? = null
+    private var previous: File? = null
+
+    /** Wired once at startup, before anything can fail. */
+    @Synchronized
+    fun attach(directory: File) {
+        current = File(directory, "session.log")
+        previous = File(directory, "previous.log")
+    }
+
     @Synchronized
     fun write(line: String) {
         if (startedAt == 0L) startedAt = System.currentTimeMillis()
         val seconds = (System.currentTimeMillis() - startedAt) / 1000
-        lines.addLast("[%3ds] %s".format(seconds, line))
+        val entry = "[%3ds] %s".format(seconds, line)
+
+        lines.addLast(entry)
         while (lines.size > KEEP) lines.removeFirst()
+
+        runCatching { current?.appendText(entry + "\n") }
     }
 
+    /**
+     * Records a crash into the session that was running when it happened.
+     *
+     * Written straight through rather than buffered: the process has moments left.
+     */
+    @Synchronized
+    fun crash(thread: String, error: Throwable) {
+        val trace = StringWriter().also { error.printStackTrace(PrintWriter(it)) }.toString()
+        val entry = "\n*** the app stopped here, on thread $thread ***\n$trace"
+        lines.addLast(entry)
+        runCatching { current?.appendText(entry + "\n") }
+    }
+
+    /**
+     * Starts a new session and keeps the old one.
+     *
+     * Rotating rather than truncating, because the interesting session is usually the one that
+     * just ended badly, and the app reaching this line means a new one is beginning.
+     */
     @Synchronized
     fun clear() {
         lines.clear()
         startedAt = 0L
+        runCatching {
+            val now = current ?: return@runCatching
+            val old = previous ?: return@runCatching
+            if (now.exists() && now.length() > 0) {
+                old.delete()
+                if (!now.renameTo(old)) {
+                    old.writeText(now.readText())
+                }
+            }
+            now.delete()
+        }
     }
 
+    /**
+     * Everything worth pasting: this session if there is one, and the session before it, which is
+     * where a crash will be.
+     */
     @Synchronized
-    fun text(): String = if (lines.isEmpty()) "nothing yet" else lines.joinToString("\n")
+    fun text(): String {
+        val parts = mutableListOf<String>()
+
+        val before = runCatching { previous?.takeIf { it.exists() }?.readText() }.getOrNull()
+        if (!before.isNullOrBlank()) parts += "--- the session before this one ---\n" + before.trim()
+
+        val now = if (lines.isNotEmpty()) {
+            lines.joinToString("\n")
+        } else {
+            runCatching { current?.takeIf { it.exists() }?.readText() }.getOrNull()?.trim().orEmpty()
+        }
+        if (now.isNotBlank()) parts += "--- this session ---\n" + now
+
+        return if (parts.isEmpty()) "nothing yet" else parts.joinToString("\n\n")
+    }
 }

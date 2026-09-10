@@ -12,6 +12,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import xyz.jmc.gozar.core.Diary
 
 /**
  * Owns the tun device and hands it to the tunnel once a way out is found.
@@ -27,22 +28,56 @@ class GozarVpnService : VpnService() {
             return START_NOT_STICKY
         }
 
-        startForeground(NOTIFICATION_ID, notification())
+        // A new session starts here rather than deeper in, so that a failure while the tun is
+        // being built lands in this session's log instead of the one that is about to be rotated
+        // away as history.
+        Diary.clear()
 
-        val fd = establish() ?: run {
+        // Everything from here to the tun being open runs on the main thread inside a system
+        // callback, so anything that throws takes the process down instantly — which is what the
+        // user sees as the app closing the moment they press connect, with no log, because the
+        // log went down with the process. None of it is allowed to throw uncaught any more:
+        // a tunnel that fails to start is a message, not a crash.
+        val started = runCatching { startForeground(NOTIFICATION_ID, notification()) }
+        if (started.isFailure) {
+            Diary.write("android would not let the tunnel run in the foreground: " +
+                started.exceptionOrNull()?.message)
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        val fd = establish()
+        if (fd == null) {
             teardown()
             return START_NOT_STICKY
         }
 
         scope.launch {
-            val up = Tunnel.bringUp(this@GozarVpnService, fd)
+            val up = try {
+                Tunnel.bringUp(this@GozarVpnService, fd)
+            } catch (e: Throwable) {
+                Diary.crash("tunnel", e)
+                false
+            }
             if (!up) teardown()
         }
 
         return START_STICKY
     }
 
-    private fun establish(): Int? {
+    /**
+     * @return the tun's descriptor, or null if the device would not give us one
+     */
+    private fun establish(): Int? = try {
+        buildTun()
+    } catch (e: Throwable) {
+        // A rejected route, a withdrawn permission, a builder the system does not like: all of
+        // them arrive here as an exception and all of them used to be fatal.
+        Diary.crash("tun", e)
+        null
+    }
+
+    private fun buildTun(): Int? {
         val descriptor = Builder()
             .setSession(getString(R.string.app_name))
             .setMtu(Tun2Socks.MTU)

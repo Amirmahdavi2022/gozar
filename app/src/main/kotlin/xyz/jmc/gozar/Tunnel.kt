@@ -68,7 +68,6 @@ object Tunnel {
     suspend fun bringUp(context: Context, tunFd: Int): Boolean {
         _phase.value = Phase.WORKING
         this.tunFd = tunFd
-        Diary.clear()
         note("looking for a way out")
 
         val engines = engines(context)
