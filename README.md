@@ -1,78 +1,69 @@
-# Gozar
+# Gozar VPN
 
-One button. Gozar works out how to get out on its own.
+One button. Gozar figures out how to get out by itself.
 
-No config to paste, no subscription link, no server to rent. You open it, you
-press the button, and it deals with the rest.
+Nothing to paste, no subscription link, no server to rent. Open it, press the button, wait a few seconds.
 
-## What it actually does
+## Download
 
-Most apps in this space hand you a list and let you sort it out. Gozar treats
-that as the app's job, not yours.
+Latest APK is on the [releases page](https://github.com/Amirmahdavi2022/gozar/releases/latest).
 
-When you press connect it starts several ways out at once and keeps whichever
-one proves it works. Not whichever one starts — whichever one carries real
-traffic, checked with a probe before anything is called connected. A second one
-is kept running quietly behind it, so when the first dies, and it will, there is
-already a live tunnel to move to. You get a half second hiccup instead of a
-reconnect.
+Grab the Universal one if you're not sure which. It installs on any phone.
 
-It also remembers. Every result is scored per network, so what worked on your
-mobile data last night goes first next time you are on mobile data, and the
-whole thing usually comes up on the first try instead of racing.
+## What it does
 
-None of this is shown to you. There is no engine list, no protocol dropdown, no
-ping numbers to squint at.
+Most apps like this hand you a list of servers and leave the sorting to you. Gozar treats that as its own job.
 
-## The ways out
+Press connect and it starts more than one way out at the same time, then keeps whichever one actually carries traffic. Starting isn't enough. A dead server and a live one both accept a connection on your phone in about a millisecond, so nothing counts as connected here until a real request has gone out and come back.
 
-They're picked so no two of them look alike on the wire. A censor that learns
-to spot one has learned nothing about the others.
+While you're using the one that won, a second one stays running quietly in the background. When the first one dies, and sooner or later it will, there's already a live tunnel sitting there to move onto. You get a hiccup instead of a reconnect.
 
-| | looks like |
-|---|---|
-| WebRTC | a video call |
-| WebTunnel | an ordinary HTTPS site |
-| obfs4 | random bytes with no structure |
-| your own config | whatever you brought |
+It also remembers. Results are scored per network, so whatever worked on your mobile data last night gets tried first the next time you're on mobile data. After the first couple of connects it usually comes up straight away instead of racing everything.
 
-The WebRTC one needs nothing to start, which is why it goes first on a fresh
-install. The other two need bridge lines, and getting those is itself blocked
-in a lot of places — so Gozar fetches them through whichever tunnel is already
-up and saves them for next time. First launch is slow, every launch after it is
-not.
+None of this shows up on screen. No engine list, no protocol dropdown, no ping numbers to stare at.
 
-Anyone with their own config can paste it in, and it gets raced alongside the
-rest. It usually wins, because it is a direct route.
+## The two ways out
 
-## Where this is going
+They're deliberately nothing alike on the wire. Whoever learns to spot one hasn't learned anything about the other.
 
-There is a companion project, [driftkite](https://github.com/Amirmahdavi2022/driftkite),
-where people outside a censored country lend a browser tab or run a small app,
-and someone inside gets a way through it. Those proxies live minutes, so there
-is nothing stable enough for a censor to block. When there are enough
-volunteers, that becomes another way out here — and unlike the Tor based ones,
-it is a direct route, so it is fast.
+The fast one dials a public server directly, speaking something that looks like a normal TLS session to a normal website. One hop, usually a few tens of milliseconds away. It ships with a starting list of servers baked into the APK so it can work on a fresh install, and it refreshes that list itself once a tunnel is up.
 
-## If nothing works
+It can also reshape the TLS handshake on the way out, which gets past the kind of equipment that reads the first packet and decides from there.
 
-During a full shutdown everything in here fails, because there is nothing left
-to fail into. When that happens the app points you at the channel:
+The slow one is Tor with pluggable transports. Three hops through volunteer relays, so it's never going to be quick, and it can't carry UDP at all. What it does have is a much better chance of coming up when things are bad. It's the safety net, not the main road.
 
-**[@parsv2r](https://t.me/parsv2r)**
+When the fast one is blocked you fall back to the slow one and stay online. When the slow one is up and the server lists are blocked, it's what fetches them so the fast one has somewhere to go next time. They feed each other.
 
-That is also where fresh configs and news get posted.
+## What it can't do
 
-## State
+During a full shutdown all of it fails, because there's nothing left to fall back into.
 
-Early. The core is being written now: the racer, the scoreboard and the health
-watcher are in, the engines are next, and the Android layer after that. Nothing
-has been built into an APK yet.
+It also won't change your apparent country reliably. You come out wherever the server it managed to reach happens to sit.
 
 ## Building
 
-Not yet. This section gets written when there is something to build.
+Builds run on GitHub Actions. Push a tag starting with `v` and the release workflow builds and publishes the APK.
+
+If you want to build it yourself you'll need the Android SDK, the NDK and Go, then:
+
+```
+git clone --recursive https://github.com/Amirmahdavi2022/gozar
+cd gozar
+bash scripts/fetch-native.sh
+bash scripts/fetch-seed.sh
+gradle :app:assembleRelease
+```
+
+The first script builds the proxy core and the handshake shaper from pinned source. The second pulls the starting server list. Neither of them vendors anyone else's code into this repo.
+
+## Where this is going
+
+There's a companion project, [driftkite](https://github.com/Amirmahdavi2022/driftkite), where people outside a censored country lend a browser tab and someone inside gets a way through it. Those proxies only live for minutes, so there's nothing stable enough to be worth blocking. Once there are enough volunteers it becomes a third way out here, and a fast one, because it's a direct route.
+
+## Channel
+
+News, fresh builds and help: [@parsv2r](https://t.me/parsv2r)
 
 ## License
 
-MIT
+MIT. Built on Tor's pluggable transports, hev-socks5-tunnel, Xray-core and byedpi.
