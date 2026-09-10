@@ -43,6 +43,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import xyz.jmc.gozar.R
+import xyz.jmc.gozar.core.Diary
 import xyz.jmc.gozar.core.Support
 
 private enum class Screen { HOME, SETTINGS, ABOUT }
@@ -183,6 +184,31 @@ private fun SettingsScreen(onBack: () -> Unit) {
             note?.let {
                 Spacer(Modifier.height(10.dp))
                 Text(it, color = GozarColors.Muted, fontSize = 13.sp)
+            }
+        }
+
+        Spacer(Modifier.height(14.dp))
+
+        // Not for the average user, and not hidden behind a developer flag
+        // either. When a connection fails the only witness is the phone it
+        // failed on, and if that phone cannot say what it saw, the next fix is
+        // a guess. One button, no upload, nothing leaves unless it is pasted.
+        Card {
+            Text(
+                stringResource(R.string.diary),
+                color = GozarColors.Ink,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(stringResource(R.string.diary_note), color = GozarColors.Muted, fontSize = 13.sp)
+            Spacer(Modifier.height(14.dp))
+            PillButton(stringResource(R.string.copy_diary), filled = false) {
+                val clipboard = context.getSystemService(android.content.ClipboardManager::class.java)
+                clipboard?.setPrimaryClip(
+                    android.content.ClipData.newPlainText("gozar", Diary.text())
+                )
+                note = context.getString(R.string.copied)
             }
         }
     }

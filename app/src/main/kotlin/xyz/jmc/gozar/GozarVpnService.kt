@@ -45,10 +45,19 @@ class GozarVpnService : VpnService() {
     private fun establish(): Int? {
         val descriptor = Builder()
             .setSession(getString(R.string.app_name))
-            .setMtu(1500)
+            .setMtu(Tun2Socks.MTU)
             .addAddress("10.7.0.1", 32)
-            .addDnsServer("1.1.1.1")
+            // Not a public resolver: the tunnel answers DNS itself, at the
+            // address hev's mapdns listens on. Pointing this at 1.1.1.1 sends
+            // every lookup out as UDP, which no SOCKS proxy we tunnel through
+            // will carry, and the result is a connection where nothing loads.
+            .addDnsServer(Tun2Socks.DNS_ADDRESS)
             .addRoute("0.0.0.0", 0)
+            // Redundant under a default route, and kept anyway. The mapped
+            // range is what mapdns hands back for a name, so if it is ever not
+            // routed into the tun every lookup succeeds and every connection
+            // fails — the quietest bug this app could have.
+            .addRoute(Tun2Socks.MAPPED_NETWORK, Tun2Socks.MAPPED_PREFIX)
             // Our own traffic must not go through our own tunnel. Without this
             // the transports would try to reach their broker through the thing
             // they are supposed to be building, and nothing would ever start.

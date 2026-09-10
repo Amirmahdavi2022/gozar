@@ -6,7 +6,6 @@ import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.Proxy
 import java.net.URL
-import javax.net.ssl.HttpsURLConnection
 
 /**
  * Fetches a tiny endpoint through the tunnel's SOCKS port.
@@ -15,11 +14,22 @@ import javax.net.ssl.HttpsURLConnection
  * everywhere, and dull enough that hitting them every fifteen seconds is
  * unremarkable to anyone watching. Captive portal endpoints fit exactly: every
  * phone on earth already hammers them.
+ *
+ * Cloudflare goes second rather than first, and that ordering is not cosmetic.
+ * A large share of the free proxy pools this app will eventually race are
+ * served by Cloudflare Workers, and a Worker cannot open a connection to a
+ * Cloudflare address — so asking such an endpoint to prove itself against one
+ * condemns a healthy endpoint as dead. Harmless for Tor, wrong the moment a
+ * second engine lands, and cheaper to get right now than to rediscover later.
+ *
+ * The hostname is deliberately left unresolved here. With a proxy set, the JDK
+ * hands the name to the SOCKS server rather than looking it up locally, so the
+ * probe exercises the same path a real request takes and never leaks a lookup.
  */
 class HttpProbe(
     private val targets: List<String> = listOf(
-        "http://cp.cloudflare.com/generate_204",
         "http://connectivitycheck.gstatic.com/generate_204",
+        "http://cp.cloudflare.com/generate_204",
     ),
     private val timeoutMs: Int = 8_000,
 ) : Prober {

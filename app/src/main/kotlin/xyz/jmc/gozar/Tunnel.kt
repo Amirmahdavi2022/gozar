@@ -9,12 +9,13 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import xyz.jmc.gozar.core.Diary
 import xyz.jmc.gozar.core.Engine
 import xyz.jmc.gozar.core.HttpProbe
 import xyz.jmc.gozar.core.Racer
 import xyz.jmc.gozar.core.Scoreboard
+import xyz.jmc.gozar.core.Session
 import xyz.jmc.gozar.engines.BridgeStore
-import xyz.jmc.gozar.engines.TorAndroidDriver
 import xyz.jmc.gozar.engines.defaultEngines
 import java.io.File
 
@@ -40,6 +41,14 @@ object Tunnel {
     private var tun2socks: Tun2Socks? = null
     private var watcher: NetworkWatcher? = null
 
+    /**
+     * The tun we were handed. Kept because a failover has to re-attach the same
+     * device to a different SOCKS port, and the alternative — tearing the tun
+     * down and building a new one — is a visible drop on the user's screen,
+     * which is the exact thing the standby engine exists to avoid.
+     */
+    @Volatile private var tunFd: Int = -1
+
     /** What the screen reads its counters from. Zeroes while nothing is up. */
     val traffic: TrafficSource get() = tun2socks ?: NoTraffic
 
@@ -52,29 +61,51 @@ object Tunnel {
      */
     suspend fun bringUp(context: Context, tunFd: Int): Boolean {
         _phase.value = Phase.WORKING
+        this.tunFd = tunFd
+        Diary.clear()
+        note("looking for a way out")
 
         val engines = engines(context)
         val racer = racer(context, engines)
         val network = (watcher ?: NetworkWatcher(context).also { watcher = it }).current()
+        note("network reads as ${network.value}")
 
         val session = racer.connect(network)
         if (session == null) {
+            note("nothing got through")
             _phase.value = Phase.FAILED
             return false
         }
 
-        val tunnel = tun2socks ?: Tun2Socks(context.filesDir).also { tun2socks = it }
-        val wired = tunnel.start(tunFd, session.socksPort)
-
+        val wired = wire(context, session)
         _phase.value = if (wired) Phase.UP else Phase.FAILED
         return wired
     }
 
     fun tearDown() {
         tun2socks?.stop()
+        tunFd = -1
         val current = racer
         scope.launch { current?.stop() }
         _phase.value = Phase.DOWN
+    }
+
+    /**
+     * Attaches the tun to whichever engine is carrying traffic right now.
+     *
+     * Called on the first connect and again on every switch. Without the second
+     * call the standby engine is decoration: the racer moves over, the screen
+     * stays green, and packets keep being posted to a port whose process has
+     * already gone.
+     */
+    private fun wire(context: Context, session: Session): Boolean {
+        val fd = tunFd
+        if (fd < 0) return false
+
+        val tunnel = tun2socks ?: Tun2Socks(context.filesDir).also { tun2socks = it }
+        val wired = tunnel.start(fd, session.socksPort)
+        note(if (wired) "tun wired to ${session.engine} on ${session.socksPort}" else "tun would not attach")
+        return wired
     }
 
     private fun engines(context: Context): List<Engine> {
@@ -87,7 +118,7 @@ object Tunnel {
         ).also { controller = it }
 
         val bridges = BridgeStore(context)
-        return defaultEngines(ipt, TorAndroidDriver(context)) { bridges.linesFor(it) }
+        return defaultEngines(context, ipt, { bridges.linesFor(it) }, ::note)
     }
 
     private fun racer(context: Context, engines: List<Engine>): Racer =
@@ -96,6 +127,12 @@ object Tunnel {
             board = Scoreboard(FileScoreStore(File(context.filesDir, "scoreboard.json"))),
             prober = HttpProbe(),
             scope = scope,
-            log = { message -> android.util.Log.i("gozar", message) },
+            log = ::note,
+            onSwitch = { session -> wire(context, session) },
         ).also { racer = it }
+
+    private fun note(message: String) {
+        Diary.write(message)
+        android.util.Log.i("gozar", message)
+    }
 }

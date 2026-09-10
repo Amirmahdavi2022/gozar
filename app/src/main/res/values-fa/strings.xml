@@ -24,4 +24,8 @@
     <string name="forget_routes_note">گذر یادش می‌ماند روی هر شبکه کدام مسیر جواب داد تا دفعه بعد از همان شروع کند. پاک کردنش فقط اتصال بعدی را کندتر می‌کند، نه بدتر.</string>
     <string name="forget">پاکش کن</string>
     <string name="forgotten">پاک شد</string>
+    <string name="diary">دفعه قبل چه شد</string>
+    <string name="diary_note">گزارش ساده‌ای از کارهایی که گذر روی همین گوشی انجام داده. جایی فرستاده نمی‌شود. اگر اتصال بالا نیامد، کپی‌اش کن و برایمان بفرست.</string>
+    <string name="copy_diary">کپی کن</string>
+    <string name="copied">کپی شد</string>
 </resources>

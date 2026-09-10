@@ -2,6 +2,7 @@ package xyz.jmc.gozar.core
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -23,7 +24,9 @@ import kotlinx.coroutines.coroutineScope
  *
  * A second engine is held warm behind the winner. That is the whole reason a
  * drop feels like a hiccup instead of a reconnect: there is already a live
- * tunnel to move to.
+ * tunnel to move to. [onSwitch] is how the tun gets re-pointed at it — without
+ * that call the standby is decoration, because packets keep going to the port
+ * of the engine that just died.
  */
 class Racer(
     private val engines: List<Engine>,
@@ -32,6 +35,7 @@ class Racer(
     private val scope: CoroutineScope,
     private val clock: () -> Long = System::currentTimeMillis,
     private val log: (String) -> Unit = {},
+    private val onSwitch: (Session) -> Unit = {},
 ) {
 
     private class Runner(val engine: Engine, val session: Session, val tookMs: Long)
@@ -49,9 +53,6 @@ class Racer(
          * a ladder instead.
          */
         const val LAUNCH_STAGGER_MS = 1_200L
-
-        /** How long a single engine gets before it is written off this round. */
-        const val ENGINE_DEADLINE_MS = 25_000L
 
         /** How often the live tunnel is rechecked. */
         const val HEALTH_EVERY_MS = 15_000L
@@ -72,12 +73,23 @@ class Racer(
      * usually finishes in one round trip rather than a race.
      */
     suspend fun connect(network: NetworkId): Session? {
+        val session = race(network) ?: return null
+        startWatching(network)
+        return session
+    }
+
+    private suspend fun race(network: NetworkId): Session? {
+        stopping = false
+
         val order = board.order(network, engines).filter { engine ->
             val skip = engine.needsBootstrap && !board.isBootstrapped(engine.name)
             if (skip) log("skipping ${engine.name}, nothing to bootstrap from yet")
             !skip
         }
-        if (order.isEmpty()) return null
+        if (order.isEmpty()) {
+            log("no engine has anything to dial")
+            return null
+        }
 
         val finished = Channel<Runner?>(capacity = order.size)
 
@@ -87,7 +99,7 @@ class Racer(
                     delay(index * LAUNCH_STAGGER_MS)
 
                     val startedAt = clock()
-                    val runner = withTimeoutOrNull(ENGINE_DEADLINE_MS) {
+                    val runner = withTimeoutOrNull(engine.deadlineMs) {
                         val session = try {
                             engine.start()
                         } catch (e: Exception) {
@@ -106,6 +118,7 @@ class Racer(
                     }
 
                     if (runner == null) {
+                        log("${engine.name} did not make it inside ${engine.deadlineMs / 1000}s")
                         engine.stop()
                         board.record(network, engine.name, ok = false, tookMs = 0)
                     } else {
@@ -146,50 +159,68 @@ class Racer(
             lock.withLock { active = winner }
         }
 
-        val result = lock.withLock { active } ?: return null
-        startWatching(network)
-        return result.session
+        return lock.withLock { active }?.session
     }
 
     private fun startWatching(network: NetworkId) {
         watcher?.cancel()
-        watcher = scope.launch {
-            var misses = 0
-            while (isActive) {
-                delay(HEALTH_EVERY_MS)
+        watcher = scope.launch { watch(network) }
+    }
 
-                val current = lock.withLock { if (stopping) null else active } ?: return@launch
+    /**
+     * Kept out of [connect] deliberately. The old version re-raced by calling
+     * connect() from inside the watcher, and connect() begins by cancelling the
+     * watcher — which was the coroutine doing the calling. It cancelled itself
+     * halfway through its own recovery.
+     */
+    private suspend fun watch(network: NetworkId) {
+        var misses = 0
 
-                if (prober.through(current.session.socksPort)) {
-                    misses = 0
-                    continue
-                }
+        while (currentCoroutineContext().isActive) {
+            delay(HEALTH_EVERY_MS)
 
-                misses++
-                if (misses < HEALTH_TOLERANCE) continue
+            val current = lock.withLock { if (stopping) null else active } ?: return
+
+            if (prober.through(current.session.socksPort)) {
                 misses = 0
-
-                log("${current.engine.name} stopped answering, moving over")
-                board.record(network, current.engine.name, ok = false, tookMs = 0)
-
-                if (!promoteStandby()) {
-                    // Nothing warm to fall into. Race again rather than leave
-                    // the user sitting on a dead tunnel.
-                    if (connect(network) == null) log("no way out right now")
-                    return@launch
-                }
+                continue
             }
+
+            misses++
+            if (misses < HEALTH_TOLERANCE) continue
+            misses = 0
+
+            log("${current.engine.name} stopped answering, moving over")
+            board.record(network, current.engine.name, ok = false, tookMs = 0)
+
+            val moved = promoteStandby()
+            if (moved != null) {
+                onSwitch(moved)
+                continue
+            }
+
+            // Nothing warm to fall into. Race again rather than leave the user
+            // sitting on a dead tunnel.
+            lock.withLock { active = null }
+            current.engine.stop()
+
+            val revived = race(network)
+            if (revived == null) {
+                log("no way out right now")
+                return
+            }
+            onSwitch(revived)
         }
     }
 
-    private suspend fun promoteStandby(): Boolean = lock.withLock {
-        val next = standby ?: return@withLock false
+    private suspend fun promoteStandby(): Session? = lock.withLock {
+        val next = standby ?: return@withLock null
         val old = active
         active = next
         standby = null
         old?.engine?.stop()
         log("now on ${next.engine.name}")
-        true
+        next.session
     }
 
     suspend fun activeSession(): Session? = lock.withLock { active?.session }
