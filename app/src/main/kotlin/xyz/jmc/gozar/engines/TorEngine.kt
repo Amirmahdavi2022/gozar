@@ -71,7 +71,16 @@ class TorEngine(
      * bare cancellation from the racer. The previous 25s was shorter than a
      * Snowflake rendezvous, which is why nothing ever won.
      */
-    override val deadlineMs: Long = BOOTSTRAP_TIMEOUT_MS + 20_000L
+    override val deadlineMs: Long = BOOTSTRAP_TIMEOUT_MS + 90_000L
+
+    /**
+     * Measured on a real phone: a full bootstrap took 57 seconds and the first request after it
+     * still had not returned in 8. Nothing was wrong — the circuit existed, the stream through it
+     * was simply being opened for the first time. Half a minute is the honest cost of Tor's first
+     * request from a filtered network, and refusing to wait it out means throwing away the one
+     * engine that got through.
+     */
+    override val probeTimeoutMs: Int = 45_000
 
     override val needsBootstrap: Boolean
         get() = Transport.ALL.none { bridges(it).isNotEmpty() }

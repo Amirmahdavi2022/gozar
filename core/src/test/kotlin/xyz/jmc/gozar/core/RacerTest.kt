@@ -30,7 +30,7 @@ private class FakeEngine(
 }
 
 private class FakeProbe(private val engines: List<FakeEngine>) : Prober {
-    override suspend fun through(socksPort: Int): Boolean =
+    override suspend fun through(socksPort: Int, timeoutMs: Int): Boolean =
         engines.firstOrNull { it.port == socksPort }?.carriesTraffic ?: false
 }
 

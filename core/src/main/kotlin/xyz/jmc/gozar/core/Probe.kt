@@ -38,11 +38,10 @@ class HttpProbe(
         "https://connectivitycheck.gstatic.com/generate_204",
         "https://cp.cloudflare.com/generate_204",
     ),
-    private val timeoutMs: Int = 8_000,
     private val log: (String) -> Unit = {},
 ) : Prober {
 
-    override suspend fun through(socksPort: Int): Boolean = withContext(Dispatchers.IO) {
+    override suspend fun through(socksPort: Int, timeoutMs: Int): Boolean = withContext(Dispatchers.IO) {
         val proxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", socksPort))
 
         for (target in targets) {

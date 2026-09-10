@@ -36,6 +36,9 @@ enum class Shape {
 /** How long an engine gets to come up and prove itself, unless it says otherwise. */
 const val DEFAULT_DEADLINE_MS = 30_000L
 
+/** How long one request through a tunnel may take, unless the engine asks for more. */
+const val DEFAULT_PROBE_TIMEOUT_MS = 8_000
+
 /** A live way out: a local SOCKS5 port the VPN service can point its tun at. */
 data class Session(
     val socksPort: Int,
@@ -78,6 +81,17 @@ interface Engine {
      */
     val deadlineMs: Long get() = DEFAULT_DEADLINE_MS
 
+    /**
+     * How long the first request through this engine may take before it counts as dead.
+     *
+     * Separate from [deadlineMs] because coming up and carrying are separate costs. Tor reaching
+     * 100% means its first circuit exists, not that a stream to a new host is cheap: that stream
+     * still has to be opened through three relays and the name resolved at the far end, and on a
+     * bridge from a filtered network the first one routinely takes half a minute. Eight seconds —
+     * a fair limit for a direct proxy one hop away — condemns a working Tor every time.
+     */
+    val probeTimeoutMs: Int get() = DEFAULT_PROBE_TIMEOUT_MS
+
     /** Brings it up and returns once a local proxy is listening. Suspends. */
     suspend fun start(): Session
 
@@ -87,5 +101,5 @@ interface Engine {
 
 /** Answers the only question that counts: does traffic come back through this. */
 interface Prober {
-    suspend fun through(socksPort: Int): Boolean
+    suspend fun through(socksPort: Int, timeoutMs: Int = DEFAULT_PROBE_TIMEOUT_MS): Boolean
 }

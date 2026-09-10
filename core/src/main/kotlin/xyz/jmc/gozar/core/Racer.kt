@@ -114,7 +114,7 @@ class Racer(
                         }
 
                         // Up is not the same as working.
-                        if (!prober.through(session.socksPort)) {
+                        if (!prober.through(session.socksPort, engine.probeTimeoutMs)) {
                             reason = "came up on port ${session.socksPort} and carried nothing"
                             engine.stop()
                             return@withTimeoutOrNull null
@@ -187,7 +187,7 @@ class Racer(
 
             val current = lock.withLock { if (stopping) null else active } ?: return
 
-            if (prober.through(current.session.socksPort)) {
+            if (prober.through(current.session.socksPort, current.engine.probeTimeoutMs)) {
                 misses = 0
                 continue
             }
