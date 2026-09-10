@@ -14,8 +14,8 @@ android {
         applicationId = "xyz.jmc.gozar"
         minSdk = 24
         targetSdk = 35
-        versionCode = 4
-        versionName = "1.0.2"
+        versionCode = 5
+        versionName = "1.0.3"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
