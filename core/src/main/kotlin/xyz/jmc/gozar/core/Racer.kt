@@ -219,6 +219,17 @@ class Racer(
             if (misses < HEALTH_TOLERANCE) continue
             misses = 0
 
+            // 🔑 Asked before anything is torn down, and it is the cheapest recovery there is.
+            // An engine that dials one of hundreds of interchangeable servers can swap the dead
+            // one out behind its own port, which nothing above it can even see. Only when it
+            // says no does this get expensive: a standby promotion re-points the tun, and a
+            // re-race drops the tunnel entirely while it looks.
+            if (current.engine.recover() &&
+                prober.through(current.session.socksPort, current.engine.probeTimeoutMs)
+            ) {
+                continue
+            }
+
             log("${current.engine.label} stopped answering, moving over")
             board.record(network, current.engine.name, ok = false, tookMs = 0)
 

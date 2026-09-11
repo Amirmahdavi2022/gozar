@@ -15,10 +15,33 @@ internal interface PoolStore {
     fun save(pool: EndpointPool)
 }
 
+/**
+ * One pool per network, because a score earned on one is not evidence about another.
+ *
+ * <p>🚨 This is the answer to "it behaves completely differently when I change operator". The
+ * endpoints were scored in a single shared file with no idea which network the evidence came
+ * from, so switching from wifi to a carrier meant dialling, in order, the servers that had proved
+ * themselves somewhere else entirely — and every one of them that the new network happened to
+ * block was written down as a failure, poisoning the ranking for the network where it worked
+ * perfectly. Two networks were filling in the same scoreboard with contradictory answers, and
+ * whichever had been used most recently won.
+ *
+ * <p>The LIST of endpoints is still shared, and that part matters: it is expensive to fetch,
+ * comes from sources that are themselves blocked, and a server existing has nothing to do with
+ * which network you are on. So a network seeing the app for the first time inherits every
+ * endpoint already known and none of the scores, and starts learning its own.
+ */
 internal class FilePoolStore(
-    private val file: File,
+    private val directory: File,
+    private val network: () -> String,
     private val seed: () -> String? = { null },
 ) : PoolStore {
+
+    private val file: File get() = File(directory, "pool-${slug(network())}.txt")
+
+    /** Whatever the network calls itself, reduced to something safe to put in a filename. */
+    private fun slug(value: String): String =
+        value.lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-').ifEmpty { "unknown" }
 
     /**
      * Read fresh each time rather than cached. It is a few hundred lines, and the alternative is
@@ -38,16 +61,59 @@ internal class FilePoolStore(
         val saved = runCatching { EndpointPool.deserialise(file.readText()) }.getOrNull()
         if (saved != null && saved.size() > 0) return saved
 
+        // A network being new is not a reason to start from a list that shipped weeks ago. What
+        // another network has already fetched is the better starting point by a long way; only
+        // its opinions are left behind.
+        val inherited = inherit()
+        if (inherited != null) {
+            save(inherited)
+            return inherited
+        }
+
         val planted = plant() ?: return saved ?: EndpointPool()
         save(planted)
         return planted
+    }
+
+    /** The largest pool any other network has, with every score stripped off it. */
+    private fun inherit(): EndpointPool? {
+        val mine = file.name
+        val others = runCatching {
+            directory.listFiles { candidate ->
+                candidate.isFile && candidate.name.startsWith("pool-") && candidate.name != mine
+            }
+        }.getOrNull().orEmpty()
+        if (others.isEmpty()) return null
+
+        val richest = others
+            .mapNotNull { runCatching { EndpointPool.deserialise(it.readText()) }.getOrNull() }
+            .maxByOrNull { it.size() }
+            ?: return null
+        if (richest.size() == 0) return null
+
+        // Re-read through the same parser the fetched lists go through, rather than copied entry
+        // by entry. A stored line is the original URI followed by its counters, so taking the URI
+        // alone drops the other network's opinions by construction instead of by remembering to
+        // zero five fields.
+        val uris = richest.serialise()
+            .lineSequence()
+            .map { it.substringBefore('\t') }
+            .filter { it.isNotBlank() }
+            .joinToString("\n")
+
+        val configs = runCatching { ProxyConfig.parseDocument(uris) }.getOrNull()
+        if (configs.isNullOrEmpty()) return null
+
+        val fresh = EndpointPool()
+        fresh.merge(Dialable.filter(configs))
+        return if (fresh.size() > 0) fresh else null
     }
 
     private fun plant(): EndpointPool? {
         val document = runCatching { seed() }.getOrNull()
         if (document.isNullOrBlank()) return null
 
-        val parsed = runCatching { XrayConfig.supported(ProxyConfig.parseDocument(document)) }
+        val parsed = runCatching { Dialable.filter(ProxyConfig.parseDocument(document)) }
             .getOrNull()
         if (parsed.isNullOrEmpty()) return null
 

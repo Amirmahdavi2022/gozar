@@ -66,4 +66,4 @@ News, fresh builds and help: [@parsv2r](https://t.me/parsv2r)
 
 ## License
 
-MIT. Built on Tor's pluggable transports, hev-socks5-tunnel, Xray-core and byedpi.
+MIT. Built on Tor's pluggable transports, hev-socks5-tunnel, Xray-core, hysteria and byedpi.

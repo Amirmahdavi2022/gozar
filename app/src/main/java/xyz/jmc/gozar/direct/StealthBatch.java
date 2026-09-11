@@ -111,6 +111,78 @@ final class StealthBatch {
     }
 
     /**
+     * How many of a round's endpoints are tried on every route rather than just the first.
+     *
+     * <p>The top few, because that is where a second route is worth its port: if the endpoint that
+     * scored best here last week is being blocked on the plain route today, the shaped route is
+     * very likely what gets it back, and it is worth knowing that immediately. Further down the
+     * ranking the question is no longer "which route works for this server" but "is there a live
+     * server here at all", and spending two ports on each candidate halves how many of those
+     * questions a round can ask.
+     */
+    static final int DEEP_CANDIDATES = 8;
+
+    /**
+     * How many endpoints a wide round can hold.
+     *
+     * <p>Noticeably more than {@link #candidatesFor}: the deep candidates spend their extra ports,
+     * everything after them costs exactly one port each, and the total is still {@link
+     * #MAX_ATTEMPTS}.
+     */
+    static int spreadCandidatesFor(int[] modes) {
+        int routes = (modes == null || modes.length == 0) ? 1 : modes.length;
+        if (routes == 1) return MAX_ATTEMPTS;
+        int deep = Math.min(DEEP_CANDIDATES, MAX_ATTEMPTS / routes);
+        int spentOnDeep = deep * routes;
+        return deep + Math.max(0, MAX_ATTEMPTS - spentOnDeep);
+    }
+
+    /**
+     * A round that searches WIDE: the best few endpoints on every route, the rest on one each.
+     *
+     * <p>🚨 This is the answer to a specific, measurable thing in a real device log. With two
+     * routes available, {@link #candidatesFor} gave every candidate both of them, so forty-eight
+     * ports bought evidence about twenty-four endpoints — out of a saved pool of two hundred.
+     * The log line read {@code 24 endpoints on 48 ports, 2 came back}: about one endpoint in ten
+     * was alive, so a round of twenty-four found two, and then had to pick the best connection
+     * the user would get from a choice of two. There was nothing wrong with the choosing. There
+     * was almost nothing to choose from.
+     *
+     * <p>Doubling the ports is not the fix — ports are core memory on someone's phone, and
+     * forty-eight was measured at about forty-five megabytes. The fix is that the second route is
+     * not worth a port on every candidate. Below the top few the question a port answers is "is
+     * anything alive here", and asking it of forty endpoints beats asking it of twenty in two
+     * different accents.
+     *
+     * <p>Same forty-eight ports, forty endpoints instead of twenty-four, and the endpoints most
+     * likely to win still get every route they could win on.
+     *
+     * @param candidates endpoints to try, best first
+     * @param modes      the routes available, preferred route first
+     */
+    static List<XrayConfig.Attempt> spread(List<ProxyConfig> candidates, int[] modes) {
+        List<XrayConfig.Attempt> attempts = new ArrayList<>();
+        if (candidates == null || modes == null || modes.length == 0) return attempts;
+
+        int deep = modes.length == 1 ? Integer.MAX_VALUE
+            : Math.min(DEEP_CANDIDATES, MAX_ATTEMPTS / modes.length);
+
+        int placed = 0;
+        for (ProxyConfig candidate : candidates) {
+            if (candidate == null || !XrayConfig.supports(candidate)) continue;
+
+            int[] routes = placed < deep ? modes : new int[] { modes[0] };
+            // A candidate goes in whole or not at all, so truncating at the cap drops the
+            // worst-scoring endpoints rather than leaving one of them with an arbitrary route.
+            if (attempts.size() + routes.length > MAX_ATTEMPTS) break;
+            for (int mode : routes) attempts.add(new XrayConfig.Attempt(candidate, mode));
+            placed++;
+            if (attempts.size() >= MAX_ATTEMPTS) break;
+        }
+        return attempts;
+    }
+
+    /**
      * The endpoints in this round that failed on every route they were given.
      *
      * <p>🚨 Per candidate, not per attempt. One endpoint appears up to three times in a round, and

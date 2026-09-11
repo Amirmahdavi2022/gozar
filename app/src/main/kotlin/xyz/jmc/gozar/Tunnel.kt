@@ -18,6 +18,7 @@ import xyz.jmc.gozar.core.Session
 import xyz.jmc.gozar.engines.BridgeStore
 import xyz.jmc.gozar.direct.FilePoolStore
 import xyz.jmc.gozar.direct.PoolStore
+import xyz.jmc.gozar.direct.ExitLocation
 import xyz.jmc.gozar.direct.Provisioner
 import xyz.jmc.gozar.direct.count
 import xyz.jmc.gozar.engines.defaultEngines
@@ -37,6 +38,19 @@ object Tunnel {
 
     private val _phase = MutableStateFlow(Phase.DOWN)
     val phase: StateFlow<Phase> = _phase.asStateFlow()
+
+    /**
+     * Where the tunnel comes out, once something on the far side has told us.
+     *
+     * Empty until it is known, and empty again the moment the tunnel moves. It is deliberately
+     * not remembered across a switch: the app dials endpoints from a public list and has no idea
+     * where any of them sit, so the country on screen is only ever the answer to a question asked
+     * through the connection that is live right now. A stale flag left over from the previous
+     * endpoint is worse than no flag, because someone is reading that line to decide whether it
+     * is safe to sign into something.
+     */
+    private val _exit = MutableStateFlow("")
+    val exit: StateFlow<String> = _exit.asStateFlow()
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -84,7 +98,10 @@ object Tunnel {
 
         val wired = wire(context, session)
         _phase.value = if (wired) Phase.UP else Phase.FAILED
-        if (wired) provision(session.socksPort)
+        if (wired) {
+            locate(session.socksPort)
+            provision(session.socksPort)
+        }
         return wired
     }
 
@@ -114,6 +131,37 @@ object Tunnel {
         }
     }
 
+    /**
+     * Asks the far side of the tunnel which country it is in.
+     *
+     * Never blocks the connection: the tunnel is already carrying traffic by the time this runs,
+     * and if every provider refuses, the card simply stays blank. Somebody waiting an extra
+     * second to connect so the app can decorate itself would be a bad trade.
+     */
+    private fun locate(socksPort: Int) {
+        _exit.value = ""
+        scope.launch {
+            val place = runCatching {
+                kotlinx.coroutines.withContext(Dispatchers.IO) {
+                    ExitLocation.lookup(LOOPBACK, socksPort, LOCATE_TIMEOUT_MS)
+                }
+            }.getOrNull()
+
+            if (place == null) {
+                note("could not tell where the tunnel comes out")
+                return@launch
+            }
+            _exit.value = place.toString()
+            // 🚨 The address itself is deliberately NOT written to the diary. The whole point of
+            // scrubbing endpoints out of the log is that a pasted log should not tell anyone
+            // which servers this app is using, and an exit address is exactly that.
+            note("the tunnel comes out in ${place.country}")
+        }
+    }
+
+    private const val LOOPBACK = "127.0.0.1"
+    private const val LOCATE_TIMEOUT_MS = 8_000
+
     /** Below this the list is worth refreshing; above it, leave the tunnel alone. */
     private const val HEALTHY_POOL = 60
 
@@ -126,7 +174,7 @@ object Tunnel {
     private const val SEED_ASSET = "seed.txt"
 
     fun tearDown() {
-
+        _exit.value = ""
         tun2socks?.stop()
         tunFd = -1
         val current = racer
@@ -163,7 +211,10 @@ object Tunnel {
 
         val bridges = BridgeStore(context)
         val store = pool ?: FilePoolStore(
-            File(context.filesDir, "pool.txt"),
+            directory = context.filesDir,
+            // Read at load and save time, not captured once, so changing network mid-session
+            // moves to that network's own scores without anything having to be rebuilt.
+            network = { (watcher ?: NetworkWatcher(context).also { watcher = it }).current().value },
             seed = {
                 runCatching {
                     context.assets.open(SEED_ASSET).bufferedReader().use { it.readText() }
@@ -181,7 +232,11 @@ object Tunnel {
             prober = HttpProbe(log = ::note),
             scope = scope,
             log = ::note,
-            onSwitch = { session -> wire(context, session) },
+            onSwitch = { session ->
+                // A switch means a different server, and usually a different country. Asking
+                // again is the only way the card can be true rather than left over.
+                wire(context, session).also { if (it) locate(session.socksPort) }
+            },
         ).also { racer = it }
 
     private fun note(message: String) {

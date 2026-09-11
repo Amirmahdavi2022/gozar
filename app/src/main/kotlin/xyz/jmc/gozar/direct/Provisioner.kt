@@ -72,7 +72,7 @@ internal object Provisioner {
         // device's own evidence and they are worth more than anything a feed can tell us; feeds
         // republish dead servers every quarter of an hour.
         val pool = store.load()
-        pool.merge(XrayConfig.supported(refresh.configs))
+        pool.merge(Dialable.filter(refresh.configs))
         pool.prune(System.currentTimeMillis())
         store.save(pool)
 

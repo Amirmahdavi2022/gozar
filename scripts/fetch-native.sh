@@ -17,6 +17,10 @@ set -euo pipefail
 
 XRAY_VERSION="v26.3.27"
 XRAY_COMMIT="d2758a023cd7f4174a5a5fa4ff66e487d4342ba0"
+
+# Pinned the same way and for the same reason: a tag can be moved, a commit cannot.
+HYSTERIA_VERSION="app/v2.6.5"
+HYSTERIA_COMMIT="55e70a5f446fb4002f721de0b32bae6d6b03f164"
 BYEDPI_VERSION="v0.17.3"
 BYEDPI_COMMIT="7efde1b1296eaaa187b70e951894dde17527489c"
 NDK_VERSION="${NDK_VERSION:-27.2.12479018}"
@@ -98,6 +102,54 @@ for i in "${!abis[@]}"; do
   chmod 0755 "$output"
   size_mb=$(( $(stat -c%s "$output" 2>/dev/null || stat -f%z "$output") / 1048576 ))
   echo "Built the proxy core for $abi ($built/${goarch[$i]}, ${size_mb} MB)"
+done
+
+# --- the quic core ------------------------------------------------------------------------
+#
+# 🚨 Why a second Go core rather than teaching the first one hysteria2: it cannot. The proxy core's
+# hysteria client config carries a version, an address and a port and has nowhere to put the
+# password, so it can parse those lines and can never connect with them. That is why a quarter of
+# every public endpoint list was being fetched, parsed, and thrown away.
+#
+# Lands as libquic.so beside libxray.so. Same reason for the name and the location as everything
+# else here: since Android 10 an app may only execute binaries from nativeLibraryDir, and the
+# packager puts anything matching lib*.so there with the right mode and the right ABI.
+#
+# MIT, which matters - this app is MIT too, and the obvious alternative core is licensed in a way
+# that would pull the whole app along with it.
+echo "Building the quic core $HYSTERIA_VERSION with $(go version)"
+
+quic_src="$temp/hysteria"
+git clone --quiet --branch "$HYSTERIA_VERSION" --depth 1 https://github.com/apernet/hysteria.git "$quic_src"
+head="$(git -C "$quic_src" rev-parse HEAD)"
+if [ "$head" != "$HYSTERIA_COMMIT" ]; then
+  echo "Quic core commit mismatch. Expected $HYSTERIA_COMMIT, got $head." >&2; exit 1
+fi
+
+for i in "${!abis[@]}"; do
+  abi="${abis[$i]}"
+  output="$destination/$abi/libquic.so"
+  rm -f "$output"
+
+  # The client lives in its own Go module under app/, not at the repository root.
+  built=""
+  for goos in android linux; do
+    if CGO_ENABLED=0 GOOS="$goos" GOARCH="${goarch[$i]}" GOARM=7 \
+        go build -C "$quic_src/app" -o "$output" -trimpath -buildvcs=false \
+        -ldflags="-s -w -buildid=" . 2>/dev/null; then
+      built="$goos"; break
+    fi
+  done
+  [ -n "$built" ] || { echo "Could not build the quic core for $abi." >&2; exit 1; }
+  [ -s "$output" ] || { echo "The quic core for $abi is empty." >&2; exit 1; }
+
+  machine="$(elf_machine "$output")"
+  if [ "$machine" != "${elf[$i]}" ]; then
+    echo "Quic core for $abi has ELF machine $machine, expected ${elf[$i]}." >&2; exit 1
+  fi
+  chmod 0755 "$output"
+  size_mb=$(( $(stat -c%s "$output" 2>/dev/null || stat -f%z "$output") / 1048576 ))
+  echo "Built the quic core for $abi ($built/${goarch[$i]}, ${size_mb} MB)"
 done
 
 # --- the local shaping proxy --------------------------------------------------------------

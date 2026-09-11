@@ -109,6 +109,22 @@ interface Engine {
     /** Brings it up and returns once a local proxy is listening. Suspends. */
     suspend fun start(): Session
 
+    /**
+     * Asked before this engine is written off: can you get yourself back without being restarted?
+     *
+     * An engine that dials one of many interchangeable servers can, and the difference matters
+     * more than it sounds. Replacing a dead server behind the SAME local port is invisible —
+     * the tun stays attached, the routes stay put, and the phone sees a second of stalled
+     * sockets. Tearing the engine down and racing again is a visible drop, every connection in
+     * flight lost, and on a bad network the better part of a minute with no way out at all.
+     *
+     * Returning true is a claim that something is listening on the same port and carrying
+     * traffic again; the caller re-probes rather than taking it on trust.
+     *
+     * Defaults to false, which is the honest answer for an engine with one way out.
+     */
+    suspend fun recover(): Boolean = false
+
     /** Tears it down. Must be safe to call more than once. */
     fun stop()
 }

@@ -62,6 +62,14 @@ final class ConfigSources {
             {"raw.githubusercontent.com", "/V2RayRoot/V2RayConfig/main/Config/shadowsocks.txt", "v2rayroot-ss"},
             {"raw.githubusercontent.com", "/sinavm/SVM/main/lite/subscriptions/xray/normal/reality", "sinavm-reality"},
             {"raw.githubusercontent.com", "/barry-far/V2ray-Config/main/Splitted-By-Protocol/trojan.txt", "barry-trojan"},
+            // 🚨 Added when the third engine was. Every source above this line carries vless,
+            // trojan and ss almost exclusively, so without a feed of its own the quic engine had
+            // a pool of whatever handful of hysteria2 lines happened to fall out of the mixed
+            // dumps - which on a bad day is none, and an engine with nothing to dial is the
+            // "three engines on paper, one on the wire" problem all over again. This one is a
+            // dedicated hysteria2 list: measured live, a hundred and forty-two lines, eighty of
+            // them carrying salamander obfuscation already.
+            {"raw.githubusercontent.com", "/0xRadikal/Free-v2ray-Configs/main/protocols/hysteria2.txt", "radikal-quic"},
     };
 
     /** How a document is retrieved. The service supplies one that goes through the live tunnel. */

@@ -17,6 +17,7 @@ import org.torproject.jni.TorService
 import xyz.jmc.gozar.core.Engine
 import xyz.jmc.gozar.core.Session
 import xyz.jmc.gozar.core.Shape
+import xyz.jmc.gozar.direct.HysteriaEngine
 import xyz.jmc.gozar.direct.PoolStore
 import xyz.jmc.gozar.direct.XrayEngine
 
@@ -304,17 +305,26 @@ class TorEngine(
 /**
  * Builds the engine list.
  *
- * Two bets, and they are bets on different things rather than two names for one.
+ * Three bets, and they are bets on different things rather than three names for one.
  *
  * Tor is slow and gets through when nothing else does: three hops of volunteer relays, reached by
  * whichever pluggable transport answered, and no fixed address for anyone to block. The direct
  * engine is one hop to a public endpoint speaking what looks like an ordinary TLS session, which
  * is fast and, being ordinary, is also the first thing a censor learns to spot.
  *
- * Nothing is shared between them. Different program, different process, different socket,
- * different shape on the wire — so a rule that kills one has no reason to touch the other, and
- * neither can pull the other down. That is what makes holding the loser warm behind the winner
- * worth anything at all.
+ * The third is QUIC over UDP with its handshake obfuscated to random bytes. It exists because
+ * the first two are both TCP, and a device log showed exactly the failure a UDP path does not
+ * share: a TLS tunnel coming up in three seconds and being throttled to nothing thirty seconds
+ * later. It costs almost nothing to have — a quarter of every public endpoint list is hysteria2,
+ * and until it was added every one of those lines was fetched, parsed, and thrown away.
+ *
+ * Nothing is shared between any of them. Different program, different process, different socket,
+ * different shape on the wire — so a rule that kills one has no reason to touch the others, and
+ * none can pull another down. That is what makes holding the loser warm behind the winner worth
+ * anything at all.
+ *
+ * 🚨 Order matters on a first launch only: the scoreboard reorders them by what has actually
+ * worked on this network, so after one success this list stops deciding anything.
  */
 internal fun defaultEngines(
     context: Context,
@@ -324,5 +334,6 @@ internal fun defaultEngines(
     log: (String) -> Unit = {},
 ): List<Engine> = listOf(
     XrayEngine(context, pool, log),
+    HysteriaEngine(context, pool, log),
     TorEngine(context, controller, bridges, log),
 )

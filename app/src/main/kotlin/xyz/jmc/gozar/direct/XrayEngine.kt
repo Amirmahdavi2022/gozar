@@ -60,6 +60,26 @@ internal class XrayEngine(
     private var process: Process? = null
     private var pool: EndpointPool = EndpointPool()
 
+    /**
+     * Endpoints that answered the winning round and were not needed, best first.
+     *
+     * <p>The round already proved these carried a real request, seconds ago, and they cost
+     * nothing to keep — they are a handful of lines of text. When the live endpoint dies this is
+     * the difference between moving to the next one in about a second and starting the whole
+     * search again from nothing, which is what the log was showing: the core gone, the tun still
+     * posting packets at its port, and half a minute before anything noticed.
+     */
+    private val warm = java.util.concurrent.ConcurrentLinkedQueue<XrayConfig.Attempt>()
+
+    /** What is on the live SOCKS port right now, so a watchdog knows what died. */
+    @Volatile private var live: XrayConfig.Attempt? = null
+
+    /** Set while stop() or a search is deliberately killing the core, so the watchdog stays out. */
+    @Volatile private var expected: Boolean = true
+
+    /** One recovery at a time, whoever notices first. */
+    private val healing = java.util.concurrent.atomic.AtomicBoolean(false)
+
     override suspend fun start(): Session = withContext(Dispatchers.IO) {
         val binary = File(context.applicationInfo.nativeLibraryDir, EXECUTABLE)
         check(binary.isFile) { "the proxy core is missing for this device architecture" }
@@ -79,13 +99,93 @@ internal class XrayEngine(
         pool.recordSuccess(live.attempt.endpoint.key(), live.latencyMs, System.currentTimeMillis())
         save()
         log("path 1 reached its endpoint ${DialMode.label(live.attempt.mode)} in ${live.latencyMs}ms")
+        if (warm.isNotEmpty()) log("${warm.size} more proven and held in reserve")
+
+        // From here on the core dying is news, not housekeeping.
+        this@XrayEngine.live = live.attempt
+        expected = false
+        watchProcess(process)
 
         Session(socksPort = XrayConfig.SOCKS_PORT, engine = name, shape = shape)
     }
 
     override fun stop() {
+        expected = true
+        warm.clear()
+        live = null
         stopProcess()
         spoof.stop()
+    }
+
+    /**
+     * Moves to another endpoint on the SAME local port, without the tunnel being torn down.
+     *
+     * <b>🔑 The port is the whole trick.</b> tun2socks is pointed at one address and nothing above
+     * it — not the tun device, not the routes, not a single app on the phone — knows or cares
+     * which server is on the far side of it. So replacing the endpoint underneath costs a second
+     * of stalled sockets and nothing else, while the alternative the app used to take, tearing the
+     * engine down and racing again, costs the tun being re-attached and every connection in flight
+     * dropped, which is what someone feels as "it keeps disconnecting".
+     *
+     * Only ever moves to endpoints the winning round already proved, so this is not a search —
+     * it is picking up something that was measured a minute ago and set aside.
+     *
+     * @return whether something is now listening on the live port again
+     */
+    override suspend fun recover(): Boolean = withContext(Dispatchers.IO) { heal() }
+
+    private fun heal(): Boolean {
+        if (!healing.compareAndSet(false, true)) return false
+        try {
+            val binary = File(context.applicationInfo.nativeLibraryDir, EXECUTABLE)
+            if (!binary.isFile) return false
+
+            val now = System.currentTimeMillis()
+            while (true) {
+                val next = warm.poll() ?: run {
+                    log("nothing left that was proven, path 1 has to look again")
+                    return false
+                }
+                expected = true
+                val latency = establish(binary, next)
+                if (latency >= 0) {
+                    live = next
+                    expected = false
+                    watchProcess(process)
+                    pool.recordSuccess(next.endpoint.key(), latency, now)
+                    save()
+                    log("path 1 moved to another endpoint in ${latency}ms without dropping the tunnel")
+                    return true
+                }
+                pool.recordFailure(next.endpoint.key(), now)
+            }
+        } catch (failure: Exception) {
+            log("path 1 could not move over: ${failure.message}")
+            return false
+        } finally {
+            healing.set(false)
+        }
+    }
+
+    /**
+     * Watches the core process and moves over the moment it exits.
+     *
+     * <p>🚨 Written for a specific line in a real device log: `failed to connect to /127.0.0.1
+     * (port 1820) ... ECONNREFUSED`. The core had died, and the only thing that could notice was
+     * a health check on a fifteen-second timer whose own probe walks three hosts at six seconds
+     * each — so the phone had no internet for the better part of a minute while the app showed a
+     * green, connected screen. Nothing was watching the one thing that had actually failed.
+     *
+     * <p>A process that exits is not ambiguous and needs no probe to confirm it.
+     */
+    private fun watchProcess(started: Process?) {
+        val target = started ?: return
+        Thread({
+            runCatching { target.waitFor() }
+            if (expected || process !== target) return@Thread
+            log("the core stopped on its own, moving to another endpoint")
+            heal()
+        }, "core-watchdog").apply { isDaemon = true }.start()
     }
 
     /**
@@ -96,18 +196,20 @@ internal class XrayEngine(
      * that worked here last week still work, the first round ends it.
      */
     private fun search(binary: File, modes: IntArray): Live? {
+        expected = true
+        warm.clear()
         val now = System.currentTimeMillis()
         val tried = mutableSetOf<String>()
         log("pool holds ${pool.size()} endpoints")
 
         for (round in 0 until MAX_ROUNDS) {
-            val candidates = nextCandidates(tried, now, StealthBatch.candidatesFor(modes))
+            val candidates = nextCandidates(tried, now, StealthBatch.spreadCandidatesFor(modes))
             if (candidates.isEmpty()) {
                 log("no candidates left after ${round} rounds")
                 return null
             }
 
-            val attempts = StealthBatch.plan(candidates, modes)
+            val attempts = StealthBatch.spread(candidates, modes)
             val config = XrayConfig.buildFanout(
                 attempts, StealthBatch.BASE_PORT, "warning", null,
                 if (modes.contains(DialMode.SPOOF)) SpoofProxy.address() else null,
@@ -122,7 +224,8 @@ internal class XrayEngine(
 
             val latencies = probeRound(attempts.size)
             val answered = latencies.indices.filter { latencies[it] >= 0 }.toSet()
-            log("round ${round + 1}: ${candidates.size} endpoints on ${attempts.size} ports, ${answered.size} came back")
+            val reached = attempts.map { it.endpoint.key() }.distinct().size
+            log("round ${round + 1}: $reached endpoints on ${attempts.size} ports, ${answered.size} came back")
 
             // An endpoint is only written down as failed when every route to it failed. Otherwise
             // a filtered network benches healthy servers one connect at a time.
@@ -136,20 +239,79 @@ internal class XrayEngine(
             // under load, and some of them accept one session at a time. Giving up on the whole
             // engine at that point is what made the app need a second tap on Connect, with a
             // round full of proven endpoints thrown away for one that went quiet.
-            for (index in latencies.indices
-                .filter { latencies[it] >= 0 }
-                .sortedBy { latencies[it] }
-                .take(ESTABLISH_TRIES)) {
+            val order = rank(latencies)
+
+            // What is not tried now is not thrown away. These are endpoints that answered a real
+            // request seconds ago, and they are what [recover] moves to when the live one dies -
+            // the difference between a hiccup and a reconnect.
+            warm.clear()
+            order.drop(1).take(WARM_KEPT).forEach { warm.add(attempts[it]) }
+
+            for (index in order.take(ESTABLISH_TRIES)) {
                 val attempt = attempts[index]
                 val latency = establish(binary, attempt)
-                if (latency >= 0) return Live(attempt, latency)
+                if (latency >= 0) {
+                    warm.remove(attempt)
+                    return Live(attempt, latency)
+                }
                 log("an endpoint answered the round and then would not carry the tunnel")
+                warm.remove(attempt)
                 pool.recordFailure(attempt.endpoint.key(), now)
             }
         }
 
         save()
         return null
+    }
+
+    /**
+     * Puts the round's answers in the order worth trying them, fastest first.
+     *
+     * <b>🚨 This is the fix for a connection that came up in three seconds and then crawled.</b>
+     * Everything here used to be ordered by [latencies] alone — the time to fetch a two-hundred-
+     * and-four with no body. That measures how near a server is and whether it is alive. It does
+     * not measure whether it will carry anything, and on a pool of free public endpoints the two
+     * are close to opposite: the nearest endpoints are the popular ones, the popular ones are the
+     * saturated ones, and a server sharing its uplink with four hundred people still answers a
+     * two-hundred-and-four instantly. Measured against the real core with endpoints throttled on
+     * purpose, latency picked a ninety-kilobyte-per-second server over a four-megabyte one,
+     * because it was fifteen milliseconds nearer.
+     *
+     * So the shortlist is ranked by latency — which is free, it was already measured — and then
+     * the top few are asked to actually move some bytes, all at once on the ports they are
+     * already listening on. That costs one short window, not one per candidate.
+     *
+     * Anything unmeasurable keeps its old latency ordering behind the measured ones, so a network
+     * where no speed host is reachable is left exactly where it was before this existed rather
+     * than worse.
+     */
+    private fun rank(latencies: LongArray): List<Int> {
+        val answered = latencies.indices.filter { latencies[it] >= 0 }.sortedBy { latencies[it] }
+        if (answered.size < 2) return answered
+
+        val shortlist = answered.take(SPEED_TRIES)
+        val rates = SpeedProbe.ratesWithFallback(
+            XrayConfig.SOCKS_LISTEN,
+            shortlist.map { StealthBatch.portFor(it) }.toIntArray(),
+            PROBE_TIMEOUT_MS,
+        )
+
+        val measured = shortlist.indices.filter { rates[it] > 0 }
+        if (measured.isEmpty()) {
+            log("no speed host answered, going on response time alone")
+            return answered
+        }
+
+        val fastest = measured.maxOf { rates[it] }
+        log("measured ${measured.size} of ${shortlist.size}, best ${humanRate(fastest)}")
+
+        val ranked = measured.sortedByDescending { rates[it] }.map { shortlist[it] }
+        return ranked + answered.filterNot { it in ranked }
+    }
+
+    private fun humanRate(bytesPerSecond: Long): String = when {
+        bytesPerSecond >= 1_000_000 -> "${bytesPerSecond / 100_000 / 10.0} MB/s"
+        else -> "${bytesPerSecond / 1024} KB/s"
     }
 
     /** An endpoint that answered on the real port, and how long it took. */
@@ -275,6 +437,18 @@ internal class XrayEngine(
 
         /** How many of a round's answers are given a real connection before moving to the next. */
         const val ESTABLISH_TRIES = 3
+
+        /**
+         * How many of a round's answers are actually timed.
+         *
+         * Four rather than all of them because every one costs bandwidth on someone's mobile
+         * plan, and because they are measured together — past a handful they start competing for
+         * the phone's link hard enough that the ordering stops meaning anything.
+         */
+        const val SPEED_TRIES = 4
+
+        /** Proven endpoints set aside for [recover]. Text, so keeping them costs nothing. */
+        const val WARM_KEPT = 6
         const val ROUND_BUDGET_MS = 20_000L
         const val PROBE_TIMEOUT_MS = 6_000
         const val LISTENER_WAIT_MS = 8_000L

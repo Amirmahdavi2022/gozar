@@ -135,7 +135,16 @@ fun GozarScreen(onToggle: () -> Unit) {
             textAlign = TextAlign.Center,
         )
 
-        Spacer(Modifier.height(30.dp))
+        Spacer(Modifier.height(18.dp))
+
+        // Only while connected, and only once the far side has answered. The endpoints come
+        // from a public list and the app has no idea where any of them sit, so this line is
+        // either a measurement or it is not shown - there is nothing sensible to put here
+        // while it is still being asked, and a placeholder that turns into a country would
+        // read like the app was guessing and then correcting itself.
+        ExitBadge(visible = connected && state.exit.isNotEmpty(), place = state.exit)
+
+        Spacer(Modifier.height(18.dp))
 
         // The panel is always here, holding dashes when idle. A layout that
         // rearranges itself every time the state changes feels broken even
@@ -151,6 +160,40 @@ fun GozarScreen(onToggle: () -> Unit) {
             },
         )
         Spacer(Modifier.height(22.dp))
+    }
+}
+
+/**
+ * The country the tunnel is exiting in.
+ *
+ * Kept to one line and no chrome on purpose. It is a fact about the connection, not a control —
+ * there is nothing to pick here, because which endpoint carries the tunnel is decided by which
+ * one proved fastest, and offering a country to choose would imply otherwise.
+ *
+ * The space it occupies is held whether or not there is anything to say, so the button and the
+ * counters do not jump down the screen the moment a lookup comes back.
+ */
+@Composable
+private fun ExitBadge(visible: Boolean, place: String) {
+    Box(
+        modifier = Modifier.fillMaxWidth().height(30.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (!visible) return@Box
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(15.dp))
+                .background(GozarColors.Card)
+                .padding(horizontal = 14.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = place,
+                color = GozarColors.Muted,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium,
+            )
+        }
     }
 }
 

@@ -1,6 +1,8 @@
 package xyz.jmc.gozar.core
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import java.io.InputStream
 import java.net.InetSocketAddress
@@ -38,15 +40,49 @@ class HttpProbe(
     private val log: (String) -> Unit = {},
 ) : Prober {
 
+    /**
+     * 🚨 The targets are raced, not walked, and that was a real defect rather than a tidy-up.
+     *
+     * <p>Walking them meant one health check could cost the timeout times the number of targets —
+     * with three hosts at eight seconds that is twenty-four seconds for a single check, on a timer
+     * meant to fire every fifteen. A device log showed exactly that: the first failure printed at
+     * thirty-five seconds, the next at fifty, the next at fifty-seven, and by then the core had
+     * been dead for most of a minute behind a screen that still said connected.
+     *
+     * <p>Worse, the walk was strictly wasteful in the case that matters. A tunnel is healthy if
+     * ANY target answers, so asking them one at a time only ever delays the good news. The first
+     * host being slow is not information about the second.
+     *
+     * <p>Raced, a check costs one timeout at the very worst and usually a few hundred
+     * milliseconds, which is what makes a fifteen-second health timer mean fifteen seconds.
+     */
     override suspend fun through(socksPort: Int, timeoutMs: Int): Boolean =
-        withContext(Dispatchers.IO) {
-            for ((host, path) in targets) {
-                val failure = exchange(socksPort, host, path, timeoutMs)
-                if (failure == null) return@withContext true
-                log("probe to $host failed: $failure")
+        withContext(Dispatchers.IO) { coroutineScope {
+            if (targets.isEmpty()) return@withContext false
+
+            val outcomes = targets.map { (host, path) ->
+                async { host to exchange(socksPort, host, path, timeoutMs) }
             }
-            false
-        }
+
+            try {
+                // select {} would return on the first to COMPLETE, which is not the same as the
+                // first to succeed - a host that fails instantly would decide the whole check.
+                var healthy = false
+                val failures = ArrayList<String>(targets.size)
+                for (outcome in outcomes) {
+                    val (host, failure) = outcome.await()
+                    if (failure == null) { healthy = true; break }
+                    failures.add("$host ($failure)")
+                }
+                // Only reported when the verdict is actually "no". A failure alongside a success
+                // says something about that host, not about the tunnel, and printing it every
+                // fifteen seconds over a perfectly good connection is how a log stops being read.
+                if (!healthy) log("nothing answered through the tunnel: ${failures.joinToString(", ")}")
+                healthy
+            } finally {
+                outcomes.forEach { it.cancel() }
+            }
+        } }
 
     /** @return null when the round trip succeeded, otherwise why it did not */
     private fun exchange(socksPort: Int, host: String, path: String, timeoutMs: Int): String? {
