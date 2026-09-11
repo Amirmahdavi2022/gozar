@@ -62,7 +62,7 @@ internal class FilePoolStore(
      */
     override fun load(): EndpointPool {
         val saved = runCatching { EndpointPool.deserialise(file.readText()) }.getOrNull()
-        if (saved != null && saved.size() > 0) return saved
+        if (saved != null && saved.size() > 0) return graft(saved)
 
         // A network being new is not a reason to start from a list that shipped weeks ago. What
         // another network has already fetched is the better starting point by a long way; only
@@ -126,6 +126,45 @@ internal class FilePoolStore(
         val fresh = EndpointPool()
         fresh.merge(Dialable.filter(configs))
         return if (fresh.size() > 0) fresh else null
+    }
+
+    /**
+     * Adds the shipped list back in when the saved pool has nothing at all for some protocol the
+     * seed carries.
+     *
+     * 🚨 This closes a defect that made a whole engine decoration for two releases. Planting only
+     * ever ran on an EMPTY pool, which is correct for a fresh install and wrong for every other
+     * device on earth. When the quic engine was added, existing installs already had a full pool —
+     * built before that engine existed, so containing not one line it could dial — and because the
+     * pool was not empty the new seed was never read. The engine stood down on every launch with
+     * "nothing to bootstrap from yet", which is exactly the "three paths on paper, one on the
+     * wire" complaint it was added to answer.
+     *
+     * Scoped as narrowly as it can be on purpose: only protocols with ZERO entries are grafted in,
+     * so a device's own hard-won scores are never diluted by a stale build-time list, and a pool
+     * that already has some of everything is returned untouched.
+     */
+    private fun graft(saved: EndpointPool): EndpointPool {
+        val have = saved.serialise()
+            .lineSequence()
+            .mapNotNull { line ->
+                val scheme = line.substringBefore("://", "")
+                scheme.takeIf { it.isNotBlank() && !it.contains('\t') }?.lowercase()
+            }
+            .toSet()
+
+        val document = runCatching { seed() }.getOrNull()
+        if (document.isNullOrBlank()) return saved
+
+        val missing = runCatching { Dialable.filter(ProxyConfig.parseDocument(document)) }
+            .getOrNull()
+            .orEmpty()
+            .filter { it.protocol !in have }
+        if (missing.isEmpty()) return saved
+
+        saved.merge(missing)
+        save(saved)
+        return saved
     }
 
     private fun plant(): EndpointPool? {

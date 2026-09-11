@@ -257,6 +257,10 @@ object Tunnel {
                 // again is the only way the card can be true rather than left over.
                 wire(context, session).also { if (it) locate(session.socksPort) }
             },
+            // The tun's own counters. Read through the property rather than captured, because
+            // the tun2socks behind it is replaced on every switch and a captured reference would
+            // keep reporting the totals of a bridge that no longer exists.
+            traffic = { traffic.sample().let { it.up to it.down } },
         ).also { racer = it }
 
     private fun note(message: String) {

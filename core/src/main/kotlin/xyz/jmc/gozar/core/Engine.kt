@@ -17,6 +17,17 @@ enum class Shape {
     /** No structure at all, obfs4 style. */
     RANDOM,
 
+    /**
+     * UDP to an anycast edge, WireGuard inside it.
+     *
+     * Its own shape rather than a variant of another, and the difference is load-bearing: the
+     * racer will only hold a standby whose shape differs from the winner's, so filing this under
+     * an existing one would quietly stop it from ever being kept warm behind a TLS-shaped engine.
+     * It fails to completely different things as well — a rule that reads TLS handshakes has
+     * nothing to read here, and a rule that drops this leaves the others alone.
+     */
+    WIREGUARD,
+
     /** Tunnelled inside DNS queries. Slow, but survives things nothing else does. */
     DNS,
 

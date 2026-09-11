@@ -98,6 +98,53 @@ class RacerTest {
         val racer = Racer(listOf(a, b), Scoreboard(MemoryStore()), FakeProbe(listOf(a, b)), backgroundScope)
         assertNull(racer.connect(NetworkId.UNKNOWN))
     }
+
+    @Test
+    fun `the slot a promotion empties is filled again`() = runTest {
+        // The failure being guarded against: the standby saves the user once, and from then on
+        // the app is back to a single way out with nothing behind it, which is exactly the state
+        // the standby exists to avoid.
+        val winner = FakeEngine("winner", Shape.HTTPS)
+        val reserve = FakeEngine("reserve", Shape.WEBRTC, startDelayMs = 2_000)
+        val third = FakeEngine("third", Shape.RANDOM, startDelayMs = 4_000)
+        val probe = FakeProbe(listOf(winner, reserve, third))
+
+        val racer = Racer(
+            listOf(winner, reserve, third), Scoreboard(MemoryStore()), probe, backgroundScope,
+        )
+        racer.connect(NetworkId.UNKNOWN)
+        delay(10_000)
+
+        // The winner dies. The reserve should be promoted, and something new held behind it.
+        winner.carriesTraffic = false
+        delay(90_000)
+
+        assertEquals("reserve", racer.activeSession()?.engine)
+        assertTrue(third.port != 0, "a replacement standby should have been started")
+    }
+
+    @Test
+    fun `a reserve that died while waiting is replaced`() = runTest {
+        // A standby is started once and then sits for hours. Nothing about having started keeps
+        // it alive, and discovering that at the moment of promotion is the worst possible time:
+        // the tun has already been pointed at it and the user is already offline.
+        val winner = FakeEngine("winner", Shape.HTTPS)
+        val reserve = FakeEngine("reserve", Shape.WEBRTC, startDelayMs = 2_000)
+        val third = FakeEngine("third", Shape.RANDOM, startDelayMs = 4_000)
+        val probe = FakeProbe(listOf(winner, reserve, third))
+
+        val racer = Racer(
+            listOf(winner, reserve, third), Scoreboard(MemoryStore()), probe, backgroundScope,
+        )
+        racer.connect(NetworkId.UNKNOWN)
+        delay(10_000)
+
+        reserve.carriesTraffic = false
+        delay(120_000)
+
+        assertEquals("winner", racer.activeSession()?.engine, "the live tunnel is untouched")
+        assertTrue(third.port != 0, "the dead reserve should have been swapped out")
+    }
 }
 
 class ScoreboardTest {

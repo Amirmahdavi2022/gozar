@@ -35,6 +35,19 @@ class Racer(
     private val clock: () -> Long = System::currentTimeMillis,
     private val log: (String) -> Unit = {},
     private val onSwitch: (Session) -> Unit = {},
+    /**
+     * Running totals from the tun, as (sent, received).
+     *
+     * 🚨 Passed in rather than measured here, and it is what closes the worst gap this app has
+     * had. A probe asking for an empty two-hundred-and-four succeeds over a tunnel that is barely
+     * moving, so the watcher below used to keep a crawling connection alive indefinitely while
+     * every check came back green. The counters are the only thing in the process that knows the
+     * difference between working and technically connected.
+     *
+     * Defaults to zeroes, which reads as a permanently idle tunnel and therefore never condemns
+     * anything — the safe default for tests and for any caller that has no counters to offer.
+     */
+    private val traffic: () -> Pair<Long, Long> = { 0L to 0L },
 ) {
 
     private class Runner(val engine: Engine, val session: Session, val tookMs: Long)
@@ -43,7 +56,18 @@ class Racer(
     private var active: Runner? = null
     private var standby: Runner? = null
     private var watcher: Job? = null
+    private var refiller: Job? = null
     private var stopping = false
+
+    /**
+     * The network the live tunnel was raced on.
+     *
+     * Kept because rebuilding a standby happens long after [connect] returned, and the scoreboard
+     * has to be asked about the same network the session belongs to. Reading the current network
+     * again at that moment would be wrong in the one case that matters — the user walked from
+     * wifi onto mobile data, which is its own event with its own reconnect.
+     */
+    @Volatile private var lastNetwork: NetworkId = NetworkId.UNKNOWN
 
     companion object {
         /**
@@ -58,6 +82,13 @@ class Racer(
 
         /** Failed probes in a row before the active engine is abandoned. */
         const val HEALTH_TOLERANCE = 2
+
+        /**
+         * Health ticks between one look at the standby and the next. Four ticks is about a
+         * minute, which is often enough to catch a reserve that has died and rare enough that
+         * nobody pays for it.
+         */
+        const val STANDBY_EVERY_TICKS = 4L
 
         /** A win older than this stops counting as recent. */
         const val RECENT_WIN_MS = 72L * 60 * 60 * 1000
@@ -79,6 +110,7 @@ class Racer(
 
     private suspend fun race(network: NetworkId): Session? {
         stopping = false
+        lastNetwork = network
 
         val order = board.order(network, engines).filter { engine ->
             val skip = engine.needsBootstrap && !board.isBootstrapped(engine.name)
@@ -189,6 +221,103 @@ class Racer(
                 runner.engine.stop()
             }
         }
+
+        // 🚨 The race may well have ended with nothing warm behind the winner — every runner-up
+        // shared its shape, or every one of them failed. That used to be the end of it, and it is
+        // the reason a second failure was always a full re-race with the tunnel down while it
+        // looked. Ask for one to be built now, quietly, behind a connection that already works.
+        ensureStandby()
+    }
+
+    /**
+     * Makes sure something different is warm behind the live tunnel, starting one if not.
+     *
+     * 🔑 The point of a standby is not that one exists at connect time — it is that one exists at
+     * FAILURE time, which may be hours later. Three things empty the slot: the race ended without
+     * a suitable runner-up, the standby was promoted when the winner died, or the standby itself
+     * quietly died while sitting there. All three used to leave the app with a single point of
+     * failure and no sign of it. This is called after every one of them.
+     *
+     * Runs at most once at a time and always in the background, because it starts an engine and
+     * waits on a real request through it — neither of which the health watcher can afford to
+     * block on.
+     */
+    private fun ensureStandby() {
+        if (refiller?.isActive == true) return
+        refiller = scope.launch {
+            verifyStandby()
+            fillStandby()
+        }
+    }
+
+    /**
+     * Checks that the warm engine is still warm, and drops it if it is not.
+     *
+     * A standby is started once and then sits untouched, possibly for hours. Nothing about being
+     * started keeps it alive: its server can be withdrawn, its circuit can expire, the network can
+     * change underneath it. Finding that out at the moment of promotion is the worst possible
+     * time, because the tun has already been re-pointed at it and the user is already offline.
+     * Finding it out on a quiet timer costs one small request and nothing else.
+     */
+    private suspend fun verifyStandby() {
+        val warm = lock.withLock { if (stopping) null else standby } ?: return
+        if (prober.through(warm.session.socksPort, warm.engine.probeTimeoutMs)) return
+
+        log("the one held in reserve went quiet, finding another")
+        lock.withLock { if (standby === warm) standby = null }
+        warm.engine.stop()
+    }
+
+    private suspend fun fillStandby() {
+        val current = lock.withLock {
+            if (stopping || standby != null) null else active
+        } ?: return
+
+        val network = lastNetwork
+        val candidates = board.order(network, engines).filter { engine ->
+            engine.name != current.engine.name &&
+                // Same reasoning as in [gather]: a standby of the same shape dies alongside the
+                // thing it is there to replace, so it is not a second bet.
+                engine.shape != current.engine.shape &&
+                !(engine.needsBootstrap && !board.isBootstrapped(engine.name))
+        }
+
+        for (engine in candidates) {
+            if (lock.withLock { stopping }) return
+
+            val session = withTimeoutOrNull(engine.deadlineMs) {
+                val started = try {
+                    engine.start()
+                } catch (e: Exception) {
+                    return@withTimeoutOrNull null
+                }
+                // Held to the same standard as a winner. A standby that was never proved is worse
+                // than none, because it is discovered to be dead only after the tun has already
+                // been pointed at it — a drop caused by the thing meant to prevent drops.
+                if (!prober.through(started.socksPort, engine.probeTimeoutMs)) null else started
+            }
+
+            if (session == null) {
+                engine.stop()
+                continue
+            }
+
+            val kept = lock.withLock {
+                if (stopping || active == null || standby != null) {
+                    false
+                } else {
+                    standby = Runner(engine, session, 0)
+                    true
+                }
+            }
+
+            if (kept) {
+                log("holding ${engine.label} warm behind it")
+            } else {
+                engine.stop()
+            }
+            return
+        }
     }
 
     private fun startWatching(network: NetworkId) {
@@ -204,20 +333,45 @@ class Racer(
      */
     private suspend fun watch(network: NetworkId) {
         var misses = 0
+        var starved = 0
+        var ticks = 0L
+        val floor = Floor()
 
         while (currentCoroutineContext().isActive) {
             delay(HEALTH_EVERY_MS)
 
             val current = lock.withLock { if (stopping) null else active } ?: return
 
-            if (prober.through(current.session.socksPort, current.engine.probeTimeoutMs)) {
+            val reachable = prober.through(current.session.socksPort, current.engine.probeTimeoutMs)
+
+            // Two separate questions, and both have to be asked. "Can it reach anything" catches a
+            // tunnel that died. "Is anything coming back" catches the far nastier case: a tunnel
+            // that is alive, answers every probe, and delivers a few hundred bytes a second, so
+            // the app looks connected and nothing loads. The second one was missing entirely and
+            // it is the fault the user actually reported.
+            if (reachable) {
                 misses = 0
-                continue
+                val (sent, received) = traffic()
+                if (floor.sample(sent, received) != Floor.Verdict.STARVED) {
+                    starved = 0
+                    // Not every tick: the standby is checked with a real request through a real
+                    // tunnel, and paying that every fifteen seconds for hours would be a
+                    // noticeable amount of battery and traffic for a question that changes slowly.
+                    ticks++
+                    if (ticks % STANDBY_EVERY_TICKS == 0L) ensureStandby()
+                    continue
+                }
+                starved++
+                if (starved < HEALTH_TOLERANCE) continue
+                log("${current.engine.label} is up but barely carrying anything, moving over")
+            } else {
+                misses++
+                if (misses < HEALTH_TOLERANCE) continue
             }
 
-            misses++
-            if (misses < HEALTH_TOLERANCE) continue
             misses = 0
+            starved = 0
+            floor.reset()
 
             // 🔑 Asked before anything is torn down, and it is the cheapest recovery there is.
             // An engine that dials one of hundreds of interchangeable servers can swap the dead
@@ -230,12 +384,19 @@ class Racer(
                 continue
             }
 
-            log("${current.engine.label} stopped answering, moving over")
+            // Only for the tunnel that genuinely went quiet. A starved one answered every probe
+            // it was given, and has already said so a few lines up; printing that it stopped
+            // answering would send whoever reads the log looking for a network fault that is not
+            // there.
+            if (!reachable) log("${current.engine.label} stopped answering, moving over")
             board.record(network, current.engine.name, ok = false, tookMs = 0)
 
             val moved = promoteStandby()
             if (moved != null) {
                 onSwitch(moved)
+                // The slot the promotion just emptied. Without this the app is one failure away
+                // from a full re-race again, having spent the very thing that was protecting it.
+                ensureStandby()
                 continue
             }
 
@@ -267,6 +428,7 @@ class Racer(
 
     suspend fun stop() {
         watcher?.cancel()
+        refiller?.cancel()
         val (a, s) = lock.withLock {
             stopping = true
             val pair = active to standby

@@ -333,6 +333,11 @@ internal fun defaultEngines(
     pool: PoolStore,
     log: (String) -> Unit = {},
 ): List<Engine> = listOf(
+    // First on the list, and first for a reason rather than for tidiness. It is the only engine
+    // here that needs nothing fetched before it can try, so on a fresh install, on an operator the
+    // app has never seen, or after the endpoint list has gone stale, it is the only one that can
+    // win at all. The scoreboard reorders this list from the second launch onwards anyway.
+    EdgeEngine(context, log),
     XrayEngine(context, pool, log),
     HysteriaEngine(context, pool, log),
     TorEngine(context, controller, bridges, log),
