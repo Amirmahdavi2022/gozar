@@ -179,6 +179,61 @@ if [ "$head" != "$WARP_COMMIT" ]; then
   echo "Edge core commit mismatch. Expected $WARP_COMMIT, got $head." >&2; exit 1
 fi
 
+# 🚨 Cut Psiphon out before building, and this is not an optional tidy-up — without it the
+# program dies before it runs a single line of its own.
+#
+# The edge core carries a Psiphon mode we never use, and that mode drags in Psiphon's private fork
+# of Go's TLS package. That fork has an init() which compares its own ConnectionState against the
+# one in the Go standard library and PANICS if they differ. Being an init(), it runs at process
+# start, before main, whatever mode was asked for. Go 1.24 added a field to that struct, the fork
+# was last updated before then, and we build with Go 1.26 — so the comparison fails, the panic
+# fires, and the program is dead in under a second every single time. A device log caught it in the
+# act: three separate routes all "found nothing", each reporting the same stack frame inside
+# psiphon-tls.
+#
+# Newer versions of the fork do not rescue us; the one after this still trails the standard library
+# by a field. The dependable fix is to stop linking it at all. Go only compiles what is imported,
+# so removing these two imports leaves the whole tree — Psiphon, its TLS fork and its init — out of
+# the binary entirely. What we lose is a mode we never invoke.
+#
+# Each edit is checked afterwards. A silently unapplied patch here would produce a binary that
+# builds perfectly and then panics on the user's phone, which is precisely the failure we are
+# climbing out of.
+echo "Removing the Psiphon mode from the edge core"
+
+python3 - "$edge_src" <<'PATCH'
+import sys, pathlib
+
+root = pathlib.Path(sys.argv[1])
+
+edits = [
+    (root / "app" / "app.go",
+     '\t"github.com/bepass-org/warp-plus/psiphon"\n',
+     ''),
+    (root / "app" / "app.go",
+     'err = psiphon.RunPsiphon(ctx, l.With("subsystem", "psiphon"), warpBind, opts.CacheDir, opts.Bind, opts.Psiphon.Country)',
+     '_ = warpBind\n\terr = errors.New("this build has no psiphon mode")'),
+    (root / "cmd" / "warp-plus" / "rootcmd.go",
+     '\tp "github.com/bepass-org/warp-plus/psiphon"\n',
+     ''),
+    (root / "cmd" / "warp-plus" / "rootcmd.go",
+     'p.Countries...',
+     '"US"'),
+]
+
+for path, old, new in edits:
+    text = path.read_text()
+    if old not in text:
+        sys.exit("Could not find in %s: %r" % (path.name, old[:60]))
+    path.write_text(text.replace(old, new, 1))
+
+for path in (root / "app" / "app.go", root / "cmd" / "warp-plus" / "rootcmd.go"):
+    if "warp-plus/psiphon" in path.read_text():
+        sys.exit("Psiphon is still imported by %s" % path.name)
+
+print("Psiphon removed from the edge core")
+PATCH
+
 for i in "${!abis[@]}"; do
   abi="${abis[$i]}"
   output="$destination/$abi/libwarp.so"
