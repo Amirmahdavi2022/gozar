@@ -56,33 +56,42 @@ class HttpProbe(
      * <p>Raced, a check costs one timeout at the very worst and usually a few hundred
      * milliseconds, which is what makes a fifteen-second health timer mean fifteen seconds.
      */
-    override suspend fun through(socksPort: Int, timeoutMs: Int): Boolean =
-        withContext(Dispatchers.IO) { coroutineScope {
-            if (targets.isEmpty()) return@withContext false
+    override suspend fun through(socksPort: Int, timeoutMs: Int): Boolean {
+        if (targets.isEmpty()) return false
 
-            val outcomes = targets.map { (host, path) ->
-                async { host to exchange(socksPort, host, path, timeoutMs) }
-            }
-
-            try {
-                // select {} would return on the first to COMPLETE, which is not the same as the
-                // first to succeed - a host that fails instantly would decide the whole check.
-                var healthy = false
-                val failures = ArrayList<String>(targets.size)
-                for (outcome in outcomes) {
-                    val (host, failure) = outcome.await()
-                    if (failure == null) { healthy = true; break }
-                    failures.add("$host ($failure)")
+        return withContext(Dispatchers.IO) {
+            coroutineScope {
+                val outcomes = targets.map { (host, path) ->
+                    async { host to exchange(socksPort, host, path, timeoutMs) }
                 }
-                // Only reported when the verdict is actually "no". A failure alongside a success
-                // says something about that host, not about the tunnel, and printing it every
-                // fifteen seconds over a perfectly good connection is how a log stops being read.
-                if (!healthy) log("nothing answered through the tunnel: ${failures.joinToString(", ")}")
-                healthy
-            } finally {
-                outcomes.forEach { it.cancel() }
+
+                try {
+                    // A plain "first to finish" would be wrong: that returns on the first to
+                    // COMPLETE, and a host that fails instantly would decide the whole check.
+                    var healthy = false
+                    val failures = ArrayList<String>(targets.size)
+                    for (outcome in outcomes) {
+                        val (host, failure) = outcome.await()
+                        if (failure == null) {
+                            healthy = true
+                            break
+                        }
+                        failures.add("$host ($failure)")
+                    }
+                    // Only reported when the verdict is actually "no". A failure alongside a
+                    // success says something about that host, not about the tunnel, and printing
+                    // it every fifteen seconds over a perfectly good connection is how a log
+                    // stops being read at all.
+                    if (!healthy) {
+                        log("nothing answered through the tunnel: ${failures.joinToString(", ")}")
+                    }
+                    healthy
+                } finally {
+                    outcomes.forEach { it.cancel() }
+                }
             }
-        } }
+        }
+    }
 
     /** @return null when the round trip succeeded, otherwise why it did not */
     private fun exchange(socksPort: Int, host: String, path: String, timeoutMs: Int): String? {
