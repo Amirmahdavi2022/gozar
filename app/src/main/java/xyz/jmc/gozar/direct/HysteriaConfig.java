@@ -1,5 +1,6 @@
 package xyz.jmc.gozar.direct;
 
+import java.net.InetAddress;
 import java.util.Map;
 
 /**
@@ -114,13 +115,63 @@ final class HysteriaConfig {
      * and a public list will hand us both forms.
      */
     private static String authority(ProxyConfig endpoint) {
-        String host = endpoint.host;
+        String host = resolved(endpoint.host);
         if (host.indexOf(':') >= 0 && host.charAt(0) != '[') host = "[" + host + "]";
         return host + ":" + endpoint.port;
     }
 
+    /**
+     * The address as an IP, looking it up here if it arrived as a name.
+     *
+     * <p>🚨 Not an optimisation. A Go program running on Android has no /etc/resolv.conf, because
+     * Android does not ship one, so Go's resolver falls back to asking 127.0.0.1 and [::1] on port
+     * 53 — where nothing is listening. Every name lookup inside that program fails immediately.
+     * Device logs show it happening over and over on exactly this field:
+     * {@code invalid config: server: lookup ... on [::1]:53}. Every endpoint in the list that was
+     * written as a name rather than a number was therefore undialable, no matter how alive the
+     * server behind it was, and the round simply reported that nothing came back.
+     *
+     * <p>None of that applies up here: this is Android's own resolver, the same one the rest of the
+     * app already reaches hosts with. So the name is turned into a number before the program ever
+     * sees it, and the program never has to ask.
+     *
+     * <p>On failure the original is returned untouched. A name that cannot be resolved here almost
+     * certainly cannot be dialled either, but passing it through keeps the failure where it was
+     * rather than inventing a new one.
+     */
+    private static String resolved(String host) {
+        if (host == null || host.isEmpty() || looksNumeric(host)) return host;
+        try {
+            return InetAddress.getByName(host).getHostAddress();
+        } catch (Exception unresolved) {
+            return host;
+        }
+    }
+
+    /**
+     * Whether the address is already a literal and needs no lookup.
+     *
+     * <p>Deliberately crude: a colon means IPv6, and a name cannot be made only of digits and dots.
+     * Being wrong in the cautious direction costs one pointless lookup of something that is already
+     * a number, which Android answers from memory.
+     */
+    private static boolean looksNumeric(String host) {
+        if (host.indexOf(':') >= 0) return true;
+        for (int i = 0; i < host.length(); i++) {
+            char c = host.charAt(i);
+            if ((c < '0' || c > '9') && c != '.') return false;
+        }
+        return true;
+    }
+
     private static void appendTls(StringBuilder out, ProxyConfig endpoint) {
         String sni = hostname(first(endpoint, "sni", "peer"));
+
+        // 🔑 Once the server field carries a number instead of a name, the client has nothing left
+        // to put in the TLS handshake, and a server that chooses its certificate by name will hand
+        // back the wrong one or refuse outright. The name the endpoint arrived with is exactly the
+        // right thing to say here, so it is kept — unless the line already named one itself.
+        if (sni.isEmpty() && !looksNumeric(endpoint.host)) sni = hostname(endpoint.host);
         boolean insecure = truthy(first(endpoint, "insecure", "allowInsecure", "allow_insecure"));
         String pin = first(endpoint, "pinSHA256", "pinsha256");
 
