@@ -4,6 +4,7 @@ import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import xyz.jmc.gozar.core.Engine
+import xyz.jmc.gozar.core.Redact
 import xyz.jmc.gozar.core.Session
 import xyz.jmc.gozar.core.Shape
 import java.io.BufferedReader
@@ -90,10 +91,29 @@ class EdgeEngine(
     /** Which rung worked last time. Survives restarts; it is one word in one file. */
     private val memory = File(context.filesDir, "edge-mode")
 
+    private val account = EdgeAccount(cache, log)
+
+    /**
+     * The last thing the program said before it stopped.
+     *
+     * 🚨 Kept because not keeping it cost a whole release. The program's output was being read for
+     * one success line and otherwise thrown away, so when it died on its first breath the app could
+     * only report that nothing answered — with the actual reason, which the program had printed,
+     * discarded a few microseconds earlier. Whatever goes wrong next, the reason should survive.
+     */
+    @Volatile private var lastWords: String = ""
+
     @Volatile private var process: Process? = null
 
     override suspend fun start(): Session = withContext(Dispatchers.IO) {
         check(binary.isFile && binary.canExecute()) { "no edge program in this build" }
+
+        // Before anything is launched, and this is the fix for the failure that made this engine
+        // decoration: the program cannot register an account itself, because a Go program on
+        // Android cannot resolve a hostname. Doing it here hands it a finished one.
+        if (!account.ensure()) {
+            log("$label has no account yet, trying anyway so the program can say why")
+        }
 
         for (mode in ladder()) {
             stop()
@@ -103,7 +123,16 @@ class EdgeEngine(
             }
         }
         stop()
-        error("no edge address answered")
+
+        // Only when the program blamed the account, never on a plain network failure. An account
+        // thrown away every time the network happens to be down would be re-registered on every
+        // attempt, which is both wasteful and a very recognisable thing to be doing.
+        if (lastWords.contains("identity", ignoreCase = true)) {
+            log("$label is starting its account over")
+            account.forget()
+        }
+
+        error(lastWords.ifBlank { "no edge address answered" })
     }
 
     /**
@@ -193,7 +222,8 @@ class EdgeEngine(
         val ready = drainUntilReady(reader, deadline)
 
         if (!ready) {
-            log("$label found nothing on the ${mode.name.lowercase()} route")
+            val reason = lastWords.ifBlank { "it said nothing at all" }
+            log("$label found nothing on the ${mode.name.lowercase()} route: $reason")
             stop()
             return false
         }
@@ -224,6 +254,10 @@ class EdgeEngine(
 
             val line = runCatching { reader.readLine() }.getOrNull() ?: return false
             if (line.contains(READY)) return true
+
+            // Redacted on the way in rather than on the way out, so an address that was printed is
+            // never held in memory in the clear waiting to be logged later.
+            if (line.isNotBlank()) lastWords = Redact.line(line).take(MAX_REASON)
         }
         return false
     }
@@ -263,5 +297,8 @@ class EdgeEngine(
         private const val READY = "serving proxy"
 
         private const val PORT_WAIT_MS = 4_000L
+
+        /** Enough of the program's complaint to act on, short enough not to flood the diary. */
+        private const val MAX_REASON = 160
     }
 }
