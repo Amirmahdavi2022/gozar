@@ -21,6 +21,10 @@ XRAY_COMMIT="d2758a023cd7f4174a5a5fa4ff66e487d4342ba0"
 # Pinned the same way and for the same reason: a tag can be moved, a commit cannot.
 HYSTERIA_VERSION="app/v2.6.5"
 HYSTERIA_COMMIT="55e70a5f446fb4002f721de0b32bae6d6b03f164"
+# The edge core. MIT, which matters twice over: this app is MIT, and it is the only free
+# implementation of this protocol that can be built from source rather than taken as a blob.
+WARP_VERSION="v1.2.6"
+WARP_COMMIT="94c33060b277bb872c5173e201fc6802ddbeca63"
 BYEDPI_VERSION="v0.17.3"
 BYEDPI_COMMIT="7efde1b1296eaaa187b70e951894dde17527489c"
 NDK_VERSION="${NDK_VERSION:-27.2.12479018}"
@@ -150,6 +154,54 @@ for i in "${!abis[@]}"; do
   chmod 0755 "$output"
   size_mb=$(( $(stat -c%s "$output" 2>/dev/null || stat -f%z "$output") / 1048576 ))
   echo "Built the quic core for $abi ($built/${goarch[$i]}, ${size_mb} MB)"
+done
+
+# --- the edge core ------------------------------------------------------------------------
+#
+# 🚨 Why a third Go core rather than another protocol on an existing one. Every other engine in
+# this app dials endpoints taken from public lists, and a device log settled what that is worth on
+# a filtered network: rounds coming back with one or two answers out of forty, and the tunnel that
+# did come up carrying under a kilobyte a second. The engines were working correctly and all of
+# them were rearranging a list of dead addresses.
+#
+# This one dials no list. It speaks WireGuard to an anycast edge, so there is no server for anyone
+# to have found and blocked, and it can come up on a fresh install with nothing fetched first —
+# which none of the others can.
+#
+# Lands as libwarp.so beside the other two, for the same reason as the other two: since Android 10
+# an app may only execute a binary out of the installer's native library directory.
+echo "Building the edge core $WARP_VERSION with $(go version)"
+
+edge_src="$temp/warp-plus"
+git clone --quiet --branch "$WARP_VERSION" --depth 1 https://github.com/bepass-org/warp-plus.git "$edge_src"
+head="$(git -C "$edge_src" rev-parse HEAD)"
+if [ "$head" != "$WARP_COMMIT" ]; then
+  echo "Edge core commit mismatch. Expected $WARP_COMMIT, got $head." >&2; exit 1
+fi
+
+for i in "${!abis[@]}"; do
+  abi="${abis[$i]}"
+  output="$destination/$abi/libwarp.so"
+  rm -f "$output"
+
+  built=""
+  for goos in android linux; do
+    if CGO_ENABLED=0 GOOS="$goos" GOARCH="${goarch[$i]}" GOARM=7 \
+        go build -C "$edge_src" -o "$output" -trimpath -buildvcs=false \
+        -ldflags="-s -w -buildid=" ./cmd/warp-plus 2>/dev/null; then
+      built="$goos"; break
+    fi
+  done
+  [ -n "$built" ] || { echo "Could not build the edge core for $abi." >&2; exit 1; }
+  [ -s "$output" ] || { echo "The edge core for $abi is empty." >&2; exit 1; }
+
+  machine="$(elf_machine "$output")"
+  if [ "$machine" != "${elf[$i]}" ]; then
+    echo "Edge core for $abi has ELF machine $machine, expected ${elf[$i]}." >&2; exit 1
+  fi
+  chmod 0755 "$output"
+  size_mb=$(( $(stat -c%s "$output" 2>/dev/null || stat -f%z "$output") / 1048576 ))
+  echo "Built the edge core for $abi ($built/${goarch[$i]}, ${size_mb} MB)"
 done
 
 # --- the local shaping proxy --------------------------------------------------------------

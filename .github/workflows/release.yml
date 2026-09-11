@@ -59,7 +59,7 @@ jobs:
       - name: Check the apk carries everything
         run: |
           apk=$(find app/build/outputs/apk/release -name '*universal*.apk' -o -name '*.apk' | head -1)
-          for item in libhev-socks5-tunnel.so libxray.so libbyedpi.so libquic.so assets/seed.txt; do
+          for item in libhev-socks5-tunnel.so libxray.so libbyedpi.so libquic.so libwarp.so assets/seed.txt; do
             unzip -l "$apk" | grep -q "$item" || { echo "$item is missing from $apk"; exit 1; }
           done
 
