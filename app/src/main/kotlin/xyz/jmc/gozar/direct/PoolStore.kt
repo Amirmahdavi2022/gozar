@@ -39,6 +39,9 @@ internal class FilePoolStore(
 
     private val file: File get() = File(directory, "pool-${slug(network())}.txt")
 
+    /** Where every network's pool lived before they were split apart. Still read, never written. */
+    private val LEGACY = "pool.txt"
+
     /** Whatever the network calls itself, reduced to something safe to put in a filename. */
     private fun slug(value: String): String =
         value.lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-').ifEmpty { "unknown" }
@@ -75,12 +78,28 @@ internal class FilePoolStore(
         return planted
     }
 
-    /** The largest pool any other network has, with every score stripped off it. */
+    /**
+     * The largest pool already on this device, with every score stripped off it.
+     *
+     * 🚨 `pool.txt` is in this list, and leaving it out was the worst regression this app has
+     * shipped. Before the pool was split per network there was exactly one file with that name,
+     * holding weeks of this device's own evidence about which endpoints actually work here. The
+     * split looked for `pool-*` only, found nothing, and fell through to the list baked into the
+     * apk at build time — so every existing install silently threw away everything it had learned
+     * and started again from a seed that was already stale on the day it was built. On a device
+     * that had been connecting in three seconds, the first four rounds after the update found
+     * nothing at all and the first press failed outright.
+     *
+     * The lesson worth keeping: changing where state lives is a migration, not a rename. A
+     * lookup that quietly finds nothing is indistinguishable from a fresh install, and a fresh
+     * install is the worst state this app can be in.
+     */
     private fun inherit(): EndpointPool? {
         val mine = file.name
         val others = runCatching {
             directory.listFiles { candidate ->
-                candidate.isFile && candidate.name.startsWith("pool-") && candidate.name != mine
+                candidate.isFile && candidate.name != mine &&
+                    (candidate.name.startsWith("pool-") || candidate.name == LEGACY)
             }
         }.getOrNull().orEmpty()
         if (others.isEmpty()) return null

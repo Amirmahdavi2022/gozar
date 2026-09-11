@@ -141,26 +141,46 @@ object Tunnel {
     private fun locate(socksPort: Int) {
         _exit.value = ""
         scope.launch {
-            val place = runCatching {
-                kotlinx.coroutines.withContext(Dispatchers.IO) {
-                    ExitLocation.lookup(LOOPBACK, socksPort, LOCATE_TIMEOUT_MS)
-                }
-            }.getOrNull()
+            // 🚨 Retried, because asking once was not good enough and the log said so plainly:
+            // "could not tell where the tunnel comes out", three seconds after connecting, on a
+            // tunnel that had barely started moving bytes. A brand new tunnel to a distant public
+            // endpoint is at its slowest in its first few seconds — that is when the route is
+            // still settling and when whatever else the phone had queued is all going through it
+            // at once. Judging it then and never asking again meant the card was blank for the
+            // entire session even when the tunnel came good a moment later.
+            //
+            // The delays grow, so a healthy tunnel answers on the first try and costs nothing,
+            // and a slow one gets a fair hearing without a request every few seconds forever.
+            for ((attempt, waitMs) in ATTEMPT_WAITS.withIndex()) {
+                if (waitMs > 0) kotlinx.coroutines.delay(waitMs)
+                if (_phase.value != Phase.UP) return@launch
 
-            if (place == null) {
-                note("could not tell where the tunnel comes out")
-                return@launch
+                val place = runCatching {
+                    kotlinx.coroutines.withContext(Dispatchers.IO) {
+                        ExitLocation.lookup(LOOPBACK, socksPort, LOCATE_TIMEOUT_MS)
+                    }
+                }.getOrNull()
+
+                if (place != null) {
+                    _exit.value = place.toString()
+                    // 🚨 The address itself is deliberately NOT written to the diary. The point of
+                    // scrubbing endpoints out of the log is that a pasted log should not tell
+                    // anyone which servers this app uses, and an exit address is exactly that.
+                    note("the tunnel comes out in ${place.country}")
+                    return@launch
+                }
+                if (attempt == ATTEMPT_WAITS.lastIndex) {
+                    note("could not tell where the tunnel comes out")
+                }
             }
-            _exit.value = place.toString()
-            // 🚨 The address itself is deliberately NOT written to the diary. The whole point of
-            // scrubbing endpoints out of the log is that a pasted log should not tell anyone
-            // which servers this app is using, and an exit address is exactly that.
-            note("the tunnel comes out in ${place.country}")
         }
     }
 
+    /** How long to wait before each attempt at the location lookup. */
+    private val ATTEMPT_WAITS = longArrayOf(0, 6_000, 15_000, 30_000).toList()
+
     private const val LOOPBACK = "127.0.0.1"
-    private const val LOCATE_TIMEOUT_MS = 8_000
+    private const val LOCATE_TIMEOUT_MS = 12_000
 
     /** Below this the list is worth refreshing; above it, leave the tunnel alone. */
     private const val HEALTHY_POOL = 60

@@ -37,7 +37,17 @@ final class EndpointPool {
      * fetched, so a bigger one is worth more than the disk it costs: two hundred entries is under
      * fifty kilobytes.
      */
-    static final int KEEP = 200;
+    /**
+     * How many endpoints survive a prune.
+     *
+     * 🚨 Raised from two hundred when the third engine arrived, and that is not a tuning knob -
+     * it is a correction. The pool is shared by every engine but each one can only dial a part of
+     * it, so adding a protocol to the pool without raising this silently SHRINKS the list the
+     * other engines have, by however many of the newcomers outrank them. Two hundred endpoints
+     * across three engines is not two hundred endpoints each; it is two hundred split three ways,
+     * and the engine that was working loses servers to make room for an engine that may not be.
+     */
+    static final int KEEP = 340;
 
     /** One endpoint plus what this device has learned about it. */
     static final class Entry {
