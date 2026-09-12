@@ -3,6 +3,7 @@ package xyz.jmc.gozar.core
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
+import kotlin.test.assertNotEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -13,6 +14,7 @@ private class FakeEngine(
     override val shape: Shape,
     private val startDelayMs: Long = 0,
     private val failToStart: Boolean = false,
+    override val launchDelayMs: Long = 0,
     override val needsBootstrap: Boolean = false,
     var carriesTraffic: Boolean = true,
 ) : Engine {
@@ -63,11 +65,14 @@ class RacerTest {
         val racer = Racer(listOf(first, sameShape), Scoreboard(MemoryStore()), probe, backgroundScope)
         racer.connect(NetworkId.UNKNOWN)
 
-        // The winner is handed back the moment it is proven, so the runner-up is still racing at
-        // that point and is dealt with behind the live tunnel. Waiting on virtual time rather than
-        // advanceUntilIdle, because the health watcher never goes idle by design.
+        // Waiting on virtual time rather than advanceUntilIdle, because the health watcher never
+        // goes idle by design.
         delay(10_000)
-        assertTrue(sameShape.stopped, "same-shape runner-up should not be held warm")
+
+        // It is not merely stopped, it is never started: the race was already won by the time its
+        // turn came round, and nothing that shares the winner's shape would have been kept anyway.
+        assertEquals(0, sameShape.port, "a same-shape runner-up should not be started at all")
+        assertNotEquals("same", racer.activeSession()?.engine)
     }
 
     @Test
@@ -121,6 +126,26 @@ class RacerTest {
 
         assertEquals("reserve", racer.activeSession()?.engine)
         assertTrue(third.port != 0, "a replacement standby should have been started")
+    }
+
+    @Test
+    fun `the tunnel moves back off a fallback once something better is warm`() = runTest {
+        // The failure this guards against, seen on a real device: the good path was throttled,
+        // the floor moved the tunnel onto the fallback exactly as designed, the good path came
+        // back and was held warm a few seconds later - and the session stayed on the fallback for
+        // good, because nothing here reacts to the live tunnel merely being the worse of the two.
+        val fallback = FakeEngine("fallback", Shape.WIREGUARD, launchDelayMs = 6_000)
+        val preferred = FakeEngine("preferred", Shape.RANDOM, startDelayMs = 8_000)
+        val probe = FakeProbe(listOf(fallback, preferred))
+
+        val racer = Racer(
+            listOf(fallback, preferred), Scoreboard(MemoryStore()), probe, backgroundScope,
+        )
+        // The fallback wins, because the one that should win takes eight seconds to come up.
+        assertEquals("fallback", racer.connect(NetworkId.UNKNOWN)?.engine)
+
+        delay(30_000)
+        assertEquals("preferred", racer.activeSession()?.engine, "should have moved off the fallback")
     }
 
     @Test
