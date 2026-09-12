@@ -21,10 +21,6 @@ XRAY_COMMIT="d2758a023cd7f4174a5a5fa4ff66e487d4342ba0"
 # Pinned the same way and for the same reason: a tag can be moved, a commit cannot.
 HYSTERIA_VERSION="app/v2.6.5"
 HYSTERIA_COMMIT="55e70a5f446fb4002f721de0b32bae6d6b03f164"
-# The edge core. MIT, which matters twice over: this app is MIT, and it is the only free
-# implementation of this protocol that can be built from source rather than taken as a blob.
-WARP_VERSION="v1.2.6"
-WARP_COMMIT="94c33060b277bb872c5173e201fc6802ddbeca63"
 BYEDPI_VERSION="v0.17.3"
 BYEDPI_COMMIT="7efde1b1296eaaa187b70e951894dde17527489c"
 NDK_VERSION="${NDK_VERSION:-27.2.12479018}"
@@ -158,97 +154,61 @@ done
 
 # --- the edge core ------------------------------------------------------------------------
 #
-# 🚨 Why a third Go core rather than another protocol on an existing one. Every other engine in
-# this app dials endpoints taken from public lists, and a device log settled what that is worth on
-# a filtered network: rounds coming back with one or two answers out of forty, and the tunnel that
-# did come up carrying under a kilobyte a second. The engines were working correctly and all of
-# them were rearranging a list of dead addresses.
+# 🚨 Why this one is downloaded rather than built, when everything else here is built from
+# source. Two reasons, and the second is the serious one.
 #
-# This one dials no list. It speaks WireGuard to an anycast edge, so there is no server for anyone
-# to have found and blocked, and it can come up on a fresh install with nothing fetched first —
-# which none of the others can.
+# It is Rust, so building it would mean a second cross-compilation toolchain in this script for a
+# single binary. That alone would be a fair trade. But the project publishes Android builds for
+# all three ABIs with published checksums, and pinning a checksum we verified by hand is a
+# stronger guarantee than a build we could not run anyway: the exact bytes that go in the apk are
+# the exact bytes that were checked.
 #
-# Lands as libwarp.so beside the other two, for the same reason as the other two: since Android 10
-# an app may only execute a binary out of the installer's native library directory.
-echo "Building the edge core $WARP_VERSION with $(go version)"
-
-edge_src="$temp/warp-plus"
-git clone --quiet --branch "$WARP_VERSION" --depth 1 https://github.com/bepass-org/warp-plus.git "$edge_src"
-head="$(git -C "$edge_src" rev-parse HEAD)"
-if [ "$head" != "$WARP_COMMIT" ]; then
-  echo "Edge core commit mismatch. Expected $WARP_COMMIT, got $head." >&2; exit 1
-fi
-
-# 🚨 Cut Psiphon out before building, and this is not an optional tidy-up — without it the
-# program dies before it runs a single line of its own.
+# What it is: a censorship circumvention client that speaks MASQUE over HTTP/3 to Cloudflare's
+# edge, with WireGuard and warp-in-warp as alternates. It carries no endpoint list — the edge is
+# anycast — so it is the one path here that can win on a fresh install with nothing fetched first.
 #
-# The edge core carries a Psiphon mode we never use, and that mode drags in Psiphon's private fork
-# of Go's TLS package. That fork has an init() which compares its own ConnectionState against the
-# one in the Go standard library and PANICS if they differ. Being an init(), it runs at process
-# start, before main, whatever mode was asked for. Go 1.24 added a field to that struct, the fork
-# was last updated before then, and we build with Go 1.26 — so the comparison fails, the panic
-# fires, and the program is dead in under a second every single time. A device log caught it in the
-# act: three separate routes all "found nothing", each reporting the same stack frame inside
-# psiphon-tls.
+# 🔑 It registers its own account, and unlike the core this replaces, it does not need a name
+# server to do it. When the direct route fails it retries over what it calls a camouflaged route:
+# a Cloudflare edge address dialled directly, no DNS lookup at all, with a split client hello.
+# That matters enormously here, because a program on Android has no /etc/resolv.conf and cannot
+# resolve a hostname — the exact trap that killed the previous core before it ran a single line.
 #
-# Newer versions of the fork do not rescue us; the one after this still trails the standard library
-# by a field. The dependable fix is to stop linking it at all. Go only compiles what is imported,
-# so removing these two imports leaves the whole tree — Psiphon, its TLS fork and its init — out of
-# the binary entirely. What we lose is a mode we never invoke.
-#
-# Each edit is checked afterwards. A silently unapplied patch here would produce a binary that
-# builds perfectly and then panics on the user's phone, which is precisely the failure we are
-# climbing out of.
-echo "Removing the Psiphon mode from the edge core"
+# ⚖️ AGPL-3.0, while this app is MIT. It runs as its own process and speaks SOCKS over loopback,
+# so the two stay separate works and the app's licence is unaffected — but the binary's source
+# must be offered to anyone who receives the apk. NOTICE carries that offer. Do not link it in.
+AETHER_VERSION="v1.9.0"
 
-python3 - "$edge_src" <<'PATCH'
-import sys, pathlib
+# Checked by hand against the project's published SHA256SUMS.txt, then each archive was unpacked
+# and its ELF machine confirmed to match the ABI it claims. Any mismatch here stops the build.
+aether_sha=(
+  "a5a488b8cf05b3e83c28ca35cef78334130411c8df5314850e816b900e9d6cb9"
+  "d49ee19423a33d905fb4fef3f163d2e3c88e5223940e0f03dbe6324bb2c7dcdb"
+  "0c4dfcea54b5a39c0a3a52473d1fb9c2ff5c4ed92de5d240f84f18f54425f961"
+)
+aether_abi=("arm64" "armv7" "x86_64")
 
-root = pathlib.Path(sys.argv[1])
-
-edits = [
-    (root / "app" / "app.go",
-     '\t"github.com/bepass-org/warp-plus/psiphon"\n',
-     ''),
-    (root / "app" / "app.go",
-     'err = psiphon.RunPsiphon(ctx, l.With("subsystem", "psiphon"), warpBind, opts.CacheDir, opts.Bind, opts.Psiphon.Country)',
-     '_ = warpBind\n\terr = errors.New("this build has no psiphon mode")'),
-    (root / "cmd" / "warp-plus" / "rootcmd.go",
-     '\tp "github.com/bepass-org/warp-plus/psiphon"\n',
-     ''),
-    (root / "cmd" / "warp-plus" / "rootcmd.go",
-     'p.Countries...',
-     '"US"'),
-]
-
-for path, old, new in edits:
-    text = path.read_text()
-    if old not in text:
-        sys.exit("Could not find in %s: %r" % (path.name, old[:60]))
-    path.write_text(text.replace(old, new, 1))
-
-for path in (root / "app" / "app.go", root / "cmd" / "warp-plus" / "rootcmd.go"):
-    if "warp-plus/psiphon" in path.read_text():
-        sys.exit("Psiphon is still imported by %s" % path.name)
-
-print("Psiphon removed from the edge core")
-PATCH
+echo "Fetching the edge core $AETHER_VERSION"
 
 for i in "${!abis[@]}"; do
   abi="${abis[$i]}"
-  output="$destination/$abi/libwarp.so"
+  output="$destination/$abi/libaether.so"
+  archive="$temp/aether-${aether_abi[$i]}.tar.gz"
   rm -f "$output"
 
-  built=""
-  for goos in android linux; do
-    if CGO_ENABLED=0 GOOS="$goos" GOARCH="${goarch[$i]}" GOARM=7 \
-        go build -C "$edge_src" -o "$output" -trimpath -buildvcs=false \
-        -ldflags="-s -w -buildid=" ./cmd/warp-plus 2>/dev/null; then
-      built="$goos"; break
-    fi
-  done
-  [ -n "$built" ] || { echo "Could not build the edge core for $abi." >&2; exit 1; }
-  [ -s "$output" ] || { echo "The edge core for $abi is empty." >&2; exit 1; }
+  url="https://github.com/CluvexStudio/Aether/releases/download/$AETHER_VERSION/aether-android-${aether_abi[$i]}.tar.gz"
+  curl -fsSL --retry 3 -o "$archive" "$url"
+
+  got="$(sha256sum "$archive" | cut -d' ' -f1)"
+  if [ "$got" != "${aether_sha[$i]}" ]; then
+    echo "Edge core for $abi has checksum $got, expected ${aether_sha[$i]}." >&2; exit 1
+  fi
+
+  unpacked="$temp/aether-${aether_abi[$i]}"
+  rm -rf "$unpacked"; mkdir -p "$unpacked"
+  tar xzf "$archive" -C "$unpacked"
+  [ -f "$unpacked/aether" ] || { echo "No aether binary inside the $abi archive." >&2; exit 1; }
+
+  cp "$unpacked/aether" "$output"
 
   machine="$(elf_machine "$output")"
   if [ "$machine" != "${elf[$i]}" ]; then
@@ -256,7 +216,7 @@ for i in "${!abis[@]}"; do
   fi
   chmod 0755 "$output"
   size_mb=$(( $(stat -c%s "$output" 2>/dev/null || stat -f%z "$output") / 1048576 ))
-  echo "Built the edge core for $abi ($built/${goarch[$i]}, ${size_mb} MB)"
+  echo "Placed the edge core for $abi (${size_mb} MB)"
 done
 
 # --- the local shaping proxy --------------------------------------------------------------

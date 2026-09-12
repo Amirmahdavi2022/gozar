@@ -15,41 +15,46 @@ import java.net.Socket
 /**
  * A way out that carries no list of servers, because it does not dial servers.
  *
- * 🚨 Read this before changing anything here. Every other engine in this app shares one weakness
+ * 🚨 Read this before changing anything here. Every other way out in this app shares one weakness
  * and it is not a coding mistake: they dial endpoints taken from public lists, and on a filtered
  * network almost none of those endpoints are alive. A device log measured it — rounds coming back
  * with one or two answers out of forty, and a tunnel that did come up carrying six hundred and
- * seventy bytes a second. Ranking, probing, racing and scoring were all working correctly and all
+ * seventy bytes a second. Ranking, probing, racing and scoring were all working correctly, and all
  * of it was rearranging a list of dead addresses. No amount of cleverness above that layer raises
  * the ceiling, because the ceiling is the list.
  *
- * This engine has no list. It speaks WireGuard to Cloudflare's own edge, which is anycast, which
- * means the address is not a server somebody put on a list that somebody else then blocked — it is
- * the same address family that carries an enormous share of ordinary web traffic. Blocking it
- * wholesale costs the blocker far more than it costs us. That is the entire reason it is here.
+ * This one has no list. It speaks MASQUE over HTTP/3 to Cloudflare's own edge, which is anycast —
+ * so the address is not a server somebody put on a list that somebody else then blocked, it is the
+ * same address family carrying an enormous share of ordinary web traffic. Blocking it wholesale
+ * costs the blocker far more than it costs us.
  *
- * Three modes, tried in order, all from the same program:
+ * 🔑 Why this program and not the one that was here before. The previous core was a reasonable
+ * choice on paper and it failed on this phone for reasons that took three releases to find: it
+ * panicked at startup over a TLS fork it linked but never used, and underneath that it could not
+ * have registered an account anyway, because a program on Android has no name server to ask. This
+ * one was chosen on evidence instead of on paper — it is the core already connecting on the
+ * owner's own device in another app — and it sidesteps that second trap by design: when direct
+ * registration fails it retries over a Cloudflare edge address dialled with no DNS lookup at all.
  *
- *  - **plain** picks an edge address and connects. Cheapest, and on a good night it is up in a
- *    handful of seconds.
- *  - **scan** sweeps Cloudflare's ranges with real WireGuard handshakes and keeps the ones that
- *    answer fastest. This is what survives when the well-known addresses are interfered with, and
- *    it costs the sweep.
- *  - **gool** runs one of those tunnels inside another one. Slower by a hop, and it gets through
- *    shaping that reads the outer connection, because the outer connection is the only one there
- *    is to read.
+ * Three rungs, tried in order, with the winning rung remembered:
  *
- * The mode that worked is remembered, so the ladder is paid once and afterwards this usually
- * comes up on the first rung.
+ *  - **turbo** stops at the first gateway that answers. On a good night it is up in seconds.
+ *  - **thorough** sweeps whole ranges instead of sampling, and adds the obfuscation profile meant
+ *    for heavily filtered networks plus a split client hello. Slower, and it is what survives when
+ *    the easy addresses are interfered with.
+ *  - **warp-in-warp** runs one tunnel inside another. Slower again by a hop, and it gets through
+ *    shaping that reads the outer connection, because the outer connection is all there is to read.
  *
- * 🔑 Readiness is taken from the program's own words rather than from the port being open. It
- * prints `serving proxy` only after it has completed a handshake AND fetched something through
- * the tunnel, so that line is a measurement, not a claim. Waiting on the port instead would report
- * success about a second before the tunnel existed, which is precisely the failure this whole app
- * is built to avoid.
+ * 🔑 Readiness is taken from the program's own words, and those words are a measurement rather
+ * than a claim: it says the tunnel is validated only after data has actually travelled end to end.
+ * Waiting on the loopback port instead would report success while the tunnel was still being
+ * built, which is precisely the failure this whole app exists to avoid.
  *
- * Shipped as libwarp.so even though it is a program, for the same reason as the other two: since
- * Android 10 an app may only execute a binary from the installer's native library directory.
+ * ⚖️ The program is AGPL-3.0 and this app is MIT. It stays a separate process reached over SOCKS,
+ * which keeps them separate works; NOTICE carries the offer of its source. Never link it in.
+ *
+ * Shipped as libaether.so even though it is a program, because since Android 10 an app may only
+ * execute a binary out of the installer's native library directory.
  */
 class EdgeEngine(
     private val context: Context,
@@ -68,52 +73,48 @@ class EdgeEngine(
      *
      * Every other fast path in this app has to fetch something before it can dial anything, and
      * the things it fetches are hosted exactly where they are blocked. This one needs nothing but
-     * the network it is already on, so it is the only engine that can win on a fresh install, on
-     * a new operator, or after the endpoint list has gone stale — which is to say, in all three
-     * situations where the app was previously useless.
+     * the network it is already on, so it is the only way out that can win on a fresh install, on
+     * an operator the app has never seen, or after the endpoint list has gone stale — which is to
+     * say, in all three situations where the app was previously useless.
      */
     override val needsBootstrap: Boolean = false
 
     /**
      * Long, because the ladder is inside [start] rather than spread over three races.
      *
-     * The racer stops at the first engine that proves itself, so a long deadline here costs
+     * The racer stops at the first way out that proves itself, so a long deadline here costs
      * nothing when something else wins sooner. What it buys is the case that matters: when this is
-     * the only thing that can get out, a sweep worth thirty seconds beats failing in ten.
+     * the only thing that can get out, a sweep worth a minute beats failing in ten seconds.
      */
-    override val deadlineMs: Long = 100_000L
+    override val deadlineMs: Long = 165_000L
 
     private val binary = File(context.applicationInfo.nativeLibraryDir, LIBRARY)
 
-    /** Where the registered identity is kept, so registration is paid once and never again. */
+    /**
+     * Where the program keeps its account and its last known good gateway.
+     *
+     * Kept across runs deliberately: registration is the slowest part of a cold start, and the
+     * saved gateway is what turns the second connection of the day into a quick one.
+     */
     private val cache = File(context.filesDir, "edge").apply { mkdirs() }
 
     /** Which rung worked last time. Survives restarts; it is one word in one file. */
     private val memory = File(context.filesDir, "edge-mode")
 
-    private val account = EdgeAccount(cache, log)
+    @Volatile private var process: Process? = null
 
     /**
-     * The last thing the program said before it stopped.
+     * The last complaint the program made before it stopped.
      *
-     * 🚨 Kept because not keeping it cost a whole release. The program's output was being read for
-     * one success line and otherwise thrown away, so when it died on its first breath the app could
-     * only report that nothing answered — with the actual reason, which the program had printed,
-     * discarded a few microseconds earlier. Whatever goes wrong next, the reason should survive.
+     * 🚨 Kept because not keeping it cost an entire release. The output was being read for one
+     * success line and otherwise thrown away, so when the program died on its first breath the app
+     * could only report that nothing answered — with the actual reason, which the program had
+     * printed, discarded a few microseconds earlier.
      */
     @Volatile private var lastWords: String = ""
 
-    @Volatile private var process: Process? = null
-
     override suspend fun start(): Session = withContext(Dispatchers.IO) {
         check(binary.isFile && binary.canExecute()) { "no edge program in this build" }
-
-        // Before anything is launched, and this is the fix for the failure that made this engine
-        // decoration: the program cannot register an account itself, because a Go program on
-        // Android cannot resolve a hostname. Doing it here hands it a finished one.
-        if (!account.ensure()) {
-            log("$label has no account yet, trying anyway so the program can say why")
-        }
 
         for (mode in ladder()) {
             stop()
@@ -123,25 +124,16 @@ class EdgeEngine(
             }
         }
         stop()
-
-        // Only when the program blamed the account, never on a plain network failure. An account
-        // thrown away every time the network happens to be down would be re-registered on every
-        // attempt, which is both wasteful and a very recognisable thing to be doing.
-        if (lastWords.contains("identity", ignoreCase = true)) {
-            log("$label is starting its account over")
-            account.forget()
-        }
-
-        error(lastWords.ifBlank { "no edge address answered" })
+        error(lastWords.ifBlank { "no edge gateway answered" })
     }
 
     /**
      * Yes, and cheaply.
      *
      * Cloudflare's edge is anycast: the address that stopped answering and the address that will
-     * answer next are frequently the same address routed somewhere else. Restarting the program
-     * behind the same loopback port re-picks the edge, re-handshakes and re-tests, and the tun
-     * above it never notices, which is the difference between a stalled second and a visible drop.
+     * answer next are frequently the same address routed somewhere else. Restarting behind the
+     * same loopback port re-selects a gateway, re-handshakes and re-validates, and the tun above
+     * it never notices — the difference between a stalled second and a visible drop.
      */
     override suspend fun recover(): Boolean = withContext(Dispatchers.IO) {
         // Deliberately not the remembered mode. Whatever was remembered is what just died, so
@@ -169,15 +161,37 @@ class EdgeEngine(
 
     // -- the ladder ---------------------------------------------------------------------------
 
+    /**
+     * 🚨 Every rung must answer all four of the program's questions — protocol, scan mode, IP
+     * version, and whether to reuse the last gateway. It is interactive by default: leave one
+     * unanswered and it stops at a prompt nobody will ever type into, which from out here is
+     * indistinguishable from a network that went silent.
+     */
     private enum class Mode(val flags: List<String>, val windowMs: Long) {
-        /** An edge address and nothing else. Up in seconds when the network allows it. */
-        PLAIN(emptyList(), 20_000L),
+        /** First gateway that answers. Up in seconds when the network allows it. */
+        TURBO(
+            listOf("--masque", "--turbo", "-4", "--quick-reconnect"),
+            30_000L,
+        ),
 
-        /** Real handshakes across the ranges, keeping whatever answers fastest. */
-        SCAN(listOf("--scan", "--rtt", "1200ms"), 45_000L),
+        /**
+         * Whole ranges rather than a sample, with the obfuscation profile built for heavily
+         * filtered networks and the client hello split across packets. The saved gateway is
+         * deliberately ignored here — had the easy route worked, turbo would already have won.
+         */
+        THOROUGH(
+            listOf(
+                "--masque", "--thorough", "-4", "--no-quick-reconnect",
+                "--noize", "gfw", "--fragment",
+            ),
+            60_000L,
+        ),
 
         /** One tunnel inside another, for equipment that reads the outer one. */
-        GOOL(listOf("--gool", "--scan", "--rtt", "1500ms"), 60_000L),
+        GOOL(
+            listOf("--gool", "--thorough", "-4", "--no-quick-reconnect", "--noize", "gfw"),
+            60_000L,
+        ),
     }
 
     private fun ladder(): List<Mode> {
@@ -193,19 +207,28 @@ class EdgeEngine(
     /**
      * Starts one rung and waits for the program to say it has a working tunnel.
      *
-     * @return true when the proxy is serving and has proved itself, false otherwise
+     * @return true when the tunnel is validated and the proxy is serving
      */
     private fun run(mode: Mode): Boolean {
         val command = listOf(
             binary.absolutePath,
             "--bind", "$LOOPBACK:$PORT",
-            "--cache-dir", cache.absolutePath,
+            "--config", File(cache, CONFIG).absolutePath,
             "--dns", DNS,
+            "--log-level", "info",
         ) + mode.flags
 
         val started = runCatching {
-            ProcessBuilder(command).redirectErrorStream(true).start()
+            ProcessBuilder(command)
+                .redirectErrorStream(true)
+                // Somewhere to put whatever it writes beside its config, and a home that exists.
+                // A program that cannot save its account has to register again on every launch,
+                // which is both slow and a very recognisable thing to be doing.
+                .apply { environment()["HOME"] = cache.absolutePath }
+                .directory(cache)
+                .start()
         }.getOrNull()
+
         if (started == null) {
             log("$label could not be started")
             return false
@@ -215,8 +238,8 @@ class EdgeEngine(
         val deadline = System.currentTimeMillis() + mode.windowMs
         val reader = started.inputStream.bufferedReader()
 
-        // 🚨 The output has to be drained whatever happens. A process whose pipe fills up blocks
-        // on its next write and stops making progress, and from out here that is indistinguishable
+        // 🚨 The output has to be drained whatever happens. A process whose pipe fills up blocks on
+        // its next write and stops making progress, and from out here that is indistinguishable
         // from a network that went quiet — the tunnel would simply never come up, with no error
         // anywhere to say why.
         val ready = drainUntilReady(reader, deadline)
@@ -228,17 +251,15 @@ class EdgeEngine(
             return false
         }
 
-        // Said it is serving. Confirm the socket agrees before handing it to the racer, which
-        // will immediately try to speak SOCKS through it.
         if (!waitForPort()) {
-            log("$label said it was serving and the port never opened")
+            log("$label validated a tunnel and the port never opened")
             stop()
             return false
         }
 
         // Keep draining in the background for the same pipe-fills-up reason as above. Nothing
-        // reads what it prints from here on; it is thrown away deliberately, because the lines
-        // carry edge addresses and a pasted log should not tell anyone where this app goes.
+        // reads what it prints from here on; it is thrown away deliberately, because those lines
+        // carry gateway addresses and a pasted log should not tell anyone where this app goes.
         Thread {
             runCatching { while (reader.readLine() != null) Unit }
             runCatching { reader.close() }
@@ -255,9 +276,13 @@ class EdgeEngine(
             val line = runCatching { reader.readLine() }.getOrNull() ?: return false
             if (line.contains(READY)) return true
 
-            // Redacted on the way in rather than on the way out, so an address that was printed is
-            // never held in memory in the clear waiting to be logged later.
-            if (line.isNotBlank()) lastWords = Redact.line(line).take(MAX_REASON)
+            // Only complaints are kept. The program narrates its progress cheerfully, and the last
+            // cheerful line before a timeout explains nothing. Redacted on the way in rather than
+            // on the way out, so an address it printed is never held here in the clear waiting to
+            // be logged later.
+            if (line.contains(TROUBLE) || line.contains(FAILURE)) {
+                lastWords = Redact.line(line.substringAfter("] ", line)).take(MAX_REASON)
+            }
         }
         return false
     }
@@ -278,8 +303,9 @@ class EdgeEngine(
     }
 
     companion object {
-        private const val LIBRARY = "libwarp.so"
+        private const val LIBRARY = "libaether.so"
         private const val LOOPBACK = "127.0.0.1"
+        private const val CONFIG = "aether.toml"
 
         /**
          * Its own loopback port, shared with nothing. A stale process left behind by a previous
@@ -287,18 +313,21 @@ class EdgeEngine(
          */
         const val PORT = 18086
 
-        private const val DNS = "1.1.1.1"
+        /** Resolvers used inside the tunnel, once it exists. */
+        private const val DNS = "1.1.1.1,1.0.0.1"
 
         /**
-         * The program prints this once, and only after a handshake has completed and a request
-         * has come back through the tunnel. Matching on it rather than on the port opening is the
-         * difference between knowing and hoping.
+         * 🔑 The program prints this once, and only after data has travelled end to end through
+         * the finished tunnel. Matching on it rather than on the port opening is the difference
+         * between knowing and hoping. Both transports share this wording.
          */
-        private const val READY = "serving proxy"
+        private const val READY = "tunnel validated (end-to-end data confirmed)"
 
-        private const val PORT_WAIT_MS = 4_000L
+        /** How the program marks a warning and an outright failure, respectively. */
+        private const val TROUBLE = "[!]"
+        private const val FAILURE = "Error:"
 
-        /** Enough of the program's complaint to act on, short enough not to flood the diary. */
         private const val MAX_REASON = 160
+        private const val PORT_WAIT_MS = 4_000L
     }
 }
