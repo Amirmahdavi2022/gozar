@@ -78,7 +78,7 @@ class Racer(
         const val LAUNCH_STAGGER_MS = 1_200L
 
         /** How often the live tunnel is rechecked. */
-        const val HEALTH_EVERY_MS = 15_000L
+        const val HEALTH_EVERY_MS = 10_000L
 
         /** Failed probes in a row before the active engine is abandoned. */
         const val HEALTH_TOLERANCE = 2
@@ -126,7 +126,7 @@ class Racer(
 
         order.forEachIndexed { index, engine ->
             scope.launch {
-                delay(index * LAUNCH_STAGGER_MS)
+                delay(index * LAUNCH_STAGGER_MS + engine.launchDelayMs)
 
                 val startedAt = clock()
 

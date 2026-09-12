@@ -88,6 +88,23 @@ class EdgeEngine(
      */
     override val deadlineMs: Long = 165_000L
 
+    /**
+     * 🚨 Held back on purpose, and it is the difference between the app being usable and not.
+     *
+     * This one comes up in three or four seconds almost every time, which meant it won every
+     * single race — and what it wins with is a tunnel that comes out in the SAME country the
+     * phone is in, because the network behind it is location-preserving by design. So the app
+     * would settle on the one way out that unblocks nothing, while a path that exits abroad was
+     * two seconds from proving itself. Measured on the owner's own device: this won at 3.6s and
+     * the quic path reached its endpoint at 4.0s.
+     *
+     * Six seconds is enough for anything with a live endpoint to get in first, and short enough
+     * that when nothing else has one - a fresh install, a stale list, a network where the public
+     * servers are all dead - this is still up inside ten seconds. It stays the thing that always
+     * works; it stops being the thing that always wins.
+     */
+    override val launchDelayMs: Long = 6_000L
+
     private val binary = File(context.applicationInfo.nativeLibraryDir, LIBRARY)
 
     /**

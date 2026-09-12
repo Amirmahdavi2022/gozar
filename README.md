@@ -28,9 +28,11 @@ None of this shows up on screen. No engine list, no protocol dropdown, no ping n
 
 They're deliberately nothing alike on the wire. Whoever learns to spot one hasn't learned anything about the other two.
 
+**The quic one** is UDP with the handshake obfuscated to random bytes, dialling public hysteria2 servers. One hop, it exits wherever that server sits, and it's the one that gets first refusal on every connect. It ships with a starting list inside the APK and tops that list up itself once something is up.
+
 **The edge one** speaks MASQUE over HTTP/3 to Cloudflare's own anycast edge. It carries no server list at all, which makes it the only one that can work on a fresh install, on an operator the app has never seen, or on a day when every list has gone stale. It has three gears — quick, then thorough with obfuscation and a split handshake, then tunnel-inside-tunnel — and it remembers which gear worked here.
 
-**The quic one** is UDP with the handshake obfuscated to random bytes, dialling public hysteria2 servers. One hop, and the quickest thing here when it lands on a good server. It ships with a starting list inside the APK and tops that list up itself once something is up.
+It's deliberately held back six seconds at the start. It comes up in three or four seconds nearly every time, so left alone it won every race — and what it wins with is a tunnel that comes out in the same country your phone is in, because that network is location-preserving by design. It's meant to be the thing that always works, not the thing that always wins.
 
 **Tor** is three hops of volunteer relays, reached through a pluggable transport. Slow, can't carry UDP, and gets through things nothing else does. It's the safety net, not the main road.
 

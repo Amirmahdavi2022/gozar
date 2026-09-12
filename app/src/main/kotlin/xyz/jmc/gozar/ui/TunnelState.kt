@@ -16,8 +16,6 @@ data class UiState(
     val note: String = "",
     val elapsedSeconds: Long = 0,
     val traffic: Traffic = Traffic(),
-    /** Where the tunnel comes out, e.g. "🇩🇪 Germany". Empty until it is known. */
-    val exit: String = "",
 ) {
     enum class Phase { IDLE, CONNECTING, CONNECTED, FAILED }
 }
@@ -33,7 +31,6 @@ data class UiState(
 @Composable
 fun rememberTunnelState(notes: WaitingNotes): UiState {
     val phase by Tunnel.phase.collectAsState()
-    val exit by Tunnel.exit.collectAsState()
     var elapsed by remember { mutableStateOf(0L) }
     var traffic by remember { mutableStateOf(Traffic()) }
     var note by remember { mutableStateOf(notes.idle) }
@@ -95,7 +92,6 @@ fun rememberTunnelState(notes: WaitingNotes): UiState {
         note = note,
         elapsedSeconds = elapsed,
         traffic = traffic,
-        exit = exit,
     )
 }
 

@@ -117,6 +117,18 @@ interface Engine {
      */
     val probeTimeoutMs: Int get() = DEFAULT_PROBE_TIMEOUT_MS
 
+    /**
+     * Extra wait before this engine is even started, on top of its place in the ladder.
+     *
+     * 🔑 Zero for everything that should get first refusal. It exists for an engine that is worth
+     * having and is not worth winning: one that comes up fast and reliably but carries a worse
+     * tunnel than the others would. Without this it wins every race on sheer speed of starting,
+     * and the app settles on the weakest way out precisely because it was the quickest to say
+     * yes. Holding it back a few seconds costs nothing when something better proves itself in
+     * that window, and costs only those few seconds when nothing does.
+     */
+    val launchDelayMs: Long get() = 0
+
     /** Brings it up and returns once a local proxy is listening. Suspends. */
     suspend fun start(): Session
 

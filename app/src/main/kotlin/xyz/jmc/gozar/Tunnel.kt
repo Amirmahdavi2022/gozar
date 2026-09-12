@@ -18,7 +18,6 @@ import xyz.jmc.gozar.core.Session
 import xyz.jmc.gozar.engines.BridgeStore
 import xyz.jmc.gozar.direct.FilePoolStore
 import xyz.jmc.gozar.direct.PoolStore
-import xyz.jmc.gozar.direct.ExitLocation
 import xyz.jmc.gozar.direct.Provisioner
 import xyz.jmc.gozar.direct.count
 import xyz.jmc.gozar.engines.defaultEngines
@@ -38,19 +37,6 @@ object Tunnel {
 
     private val _phase = MutableStateFlow(Phase.DOWN)
     val phase: StateFlow<Phase> = _phase.asStateFlow()
-
-    /**
-     * Where the tunnel comes out, once something on the far side has told us.
-     *
-     * Empty until it is known, and empty again the moment the tunnel moves. It is deliberately
-     * not remembered across a switch: the app dials endpoints from a public list and has no idea
-     * where any of them sit, so the country on screen is only ever the answer to a question asked
-     * through the connection that is live right now. A stale flag left over from the previous
-     * endpoint is worse than no flag, because someone is reading that line to decide whether it
-     * is safe to sign into something.
-     */
-    private val _exit = MutableStateFlow("")
-    val exit: StateFlow<String> = _exit.asStateFlow()
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -110,10 +96,7 @@ object Tunnel {
 
         val wired = wire(context, session)
         _phase.value = if (wired) Phase.UP else Phase.FAILED
-        if (wired) {
-            locate(session.socksPort)
-            provision(session.socksPort)
-        }
+        if (wired) provision(session.socksPort)
         return wired
     }
 
@@ -144,57 +127,6 @@ object Tunnel {
     }
 
     /**
-     * Asks the far side of the tunnel which country it is in.
-     *
-     * Never blocks the connection: the tunnel is already carrying traffic by the time this runs,
-     * and if every provider refuses, the card simply stays blank. Somebody waiting an extra
-     * second to connect so the app can decorate itself would be a bad trade.
-     */
-    private fun locate(socksPort: Int) {
-        _exit.value = ""
-        scope.launch {
-            // 🚨 Retried, because asking once was not good enough and the log said so plainly:
-            // "could not tell where the tunnel comes out", three seconds after connecting, on a
-            // tunnel that had barely started moving bytes. A brand new tunnel to a distant public
-            // endpoint is at its slowest in its first few seconds — that is when the route is
-            // still settling and when whatever else the phone had queued is all going through it
-            // at once. Judging it then and never asking again meant the card was blank for the
-            // entire session even when the tunnel came good a moment later.
-            //
-            // The delays grow, so a healthy tunnel answers on the first try and costs nothing,
-            // and a slow one gets a fair hearing without a request every few seconds forever.
-            for ((attempt, waitMs) in ATTEMPT_WAITS.withIndex()) {
-                if (waitMs > 0) kotlinx.coroutines.delay(waitMs)
-                if (_phase.value != Phase.UP) return@launch
-
-                val place = runCatching {
-                    kotlinx.coroutines.withContext(Dispatchers.IO) {
-                        ExitLocation.lookup(LOOPBACK, socksPort, LOCATE_TIMEOUT_MS)
-                    }
-                }.getOrNull()
-
-                if (place != null) {
-                    _exit.value = place.toString()
-                    // 🚨 The address itself is deliberately NOT written to the diary. The point of
-                    // scrubbing endpoints out of the log is that a pasted log should not tell
-                    // anyone which servers this app uses, and an exit address is exactly that.
-                    note("the tunnel comes out in ${place.country}")
-                    return@launch
-                }
-                if (attempt == ATTEMPT_WAITS.lastIndex) {
-                    note("could not tell where the tunnel comes out")
-                }
-            }
-        }
-    }
-
-    /** How long to wait before each attempt at the location lookup. */
-    private val ATTEMPT_WAITS = longArrayOf(0, 6_000, 15_000, 30_000).toList()
-
-    private const val LOOPBACK = "127.0.0.1"
-    private const val LOCATE_TIMEOUT_MS = 12_000
-
-    /**
      * Below this the list is worth refreshing; above it, leave the tunnel alone.
      *
      * Raised when the sources were cut down to three hysteria2 files. A refresh used to mean half
@@ -214,7 +146,6 @@ object Tunnel {
     private const val SEED_ASSET = "seed.txt"
 
     fun tearDown() {
-        _exit.value = ""
         tun2socks?.stop()
         tunFd = -1
         livePort = -1
@@ -277,11 +208,7 @@ object Tunnel {
             prober = HttpProbe(log = ::note),
             scope = scope,
             log = ::note,
-            onSwitch = { session ->
-                // A switch means a different server, and usually a different country. Asking
-                // again is the only way the card can be true rather than left over.
-                wire(context, session).also { if (it) locate(session.socksPort) }
-            },
+            onSwitch = { session -> wire(context, session) },
             // The tun's own counters. Read through the property rather than captured, because
             // the tun2socks behind it is replaced on every switch and a captured reference would
             // keep reporting the totals of a bridge that no longer exists.

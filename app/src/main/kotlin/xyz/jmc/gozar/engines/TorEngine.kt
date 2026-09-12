@@ -99,16 +99,13 @@ class TorEngine(
      * Snowflake rendezvous, which is why nothing ever won.
      */
     /**
-     * Room for both routes, because there are two of them now.
+     * One bootstrap plus one real request through it.
      *
-     * 🚨 Long, and it costs the user nothing in the case that looks alarming. A cold race can
-     * only ever run the first route: the second one needs a path that is already carrying
-     * traffic, and if one existed the racer would have handed the tunnel over already. So the
-     * second route is only ever paid for in the background, refilling the reserve behind a
-     * connection that is working. Cutting this to fit the cold case would cancel the chained
-     * route halfway through, every time, which is the same as not having built it.
+     * Only ever one attempt now - see [start] for why a second one inside the same process is not
+     * survivable - so this is two minutes of bootstrap and forty seconds to prove the circuit
+     * carries, and not a second more.
      */
-    override val deadlineMs: Long = 300_000L
+    override val deadlineMs: Long = 180_000L
 
     /**
      * Measured on a real phone: a full bootstrap took 57 seconds and the first request after it
@@ -131,6 +128,12 @@ class TorEngine(
         get() = Transport.ALL.none { bridges(it).isNotEmpty() }
 
     private val started = mutableListOf<String>()
+
+    /** The hop chosen by [chooseRoute], so the check and the torrc cannot disagree. */
+    @Volatile private var carrierPort: Int = -1
+
+    /** See [start]: one Tor per process, because its shutdown takes the process with it. */
+    @Volatile private var launchedOnce: Boolean = false
 
     @Volatile private var bound = false
     @Volatile private var binder: TorService.LocalBinder? = null
@@ -166,31 +169,18 @@ class TorEngine(
     }
 
     override suspend fun start(): Session = withContext(Dispatchers.IO) {
-        var reason = "no route was available"
+        // 🚨 Once per process, and this is not a tidy-up. Tor is not a program we launch, it is a
+        // native library linked into this process, and its shutdown path ends the process rather
+        // than returning. Two device logs showed exactly that: the engine tore Tor down, started
+        // it again for its second route, and the whole app was gone within a second - the next
+        // launch reported "the last run ended in a crash in native code". So this asks for one
+        // Tor per run of the app, ever, and if that one did not work the route memory below is
+        // what makes the next launch try the other way instead.
+        check(!launchedOnce) { "tor has already had its turn this run" }
 
-        for (route in routes()) {
-            stop()
-            val port = runCatching { attempt(route) }
-                .onFailure { reason = it.message ?: "tor would not start" }
-                .getOrNull()
+        val route = chooseRoute()
+        launchedOnce = true
 
-            if (port != null) {
-                remember(route)
-                log("path 2 is up, socks on $port")
-                return@withContext Session(socksPort = port, engine = name, shape = shape)
-            }
-        }
-
-        stop()
-        error(reason)
-    }
-
-    /**
-     * One route, all the way to a port that has actually carried something.
-     *
-     * @return the SOCKS port, or null when this route did not work
-     */
-    private suspend fun attempt(route: Route): Int? {
         when (route) {
             Route.BRIDGES -> {
                 val plugins = startTransports()
@@ -200,9 +190,8 @@ class TorEngine(
             }
 
             Route.CARRIER -> {
-                val hop = usableCarrier() ?: return null
                 log("path 2 is going out through the path that already works")
-                writeTorrc(emptyMap(), hop = hop)
+                writeTorrc(emptyMap(), hop = carrierPort)
             }
         }
 
@@ -210,24 +199,46 @@ class TorEngine(
 
         val up = withTimeoutOrNull(route.bootstrapMs) { awaitBootstrap() }
         check(up == true) {
+            remember(other(route))
             "tor got no further than ${lastPhase.ifEmpty { "not started" }} " +
                 "in ${route.bootstrapMs / 1000}s"
         }
 
         val port = socksPort()
 
-        // 🚨 Asked here rather than left to the racer, and this is the whole point of having two
-        // routes. The racer gets one answer per engine: if it probes a bootstrapped Tor that
-        // carries nothing, the engine is written off for the session and the second route is
-        // never reached. A device log showed exactly that happening twice in a row on two
-        // different networks - "path 2 is up, socks on 9050" and then, thirty seconds later,
-        // "came up on port 9050 and carried nothing".
+        // 🚨 Asked here rather than left to the racer, because the answer decides what the NEXT
+        // launch does. A device log showed this twice on two networks: bootstrapped to a hundred
+        // percent, published its port, and then nothing came back through it. That is not a slow
+        // bootstrap and waiting longer does not fix it - the bridge answered and the streams
+        // through the circuit went nowhere. Writing the other route down here is the whole
+        // mechanism by which the app gets out of it.
         if (!carries(port)) {
-            log("path 2 came up on $port and nothing came back through it")
-            return null
+            remember(other(route))
+            error("path 2 came up on $port and nothing came back through it")
         }
-        return port
+
+        remember(route)
+        log("path 2 is up, socks on $port")
+        Session(socksPort = port, engine = name, shape = shape)
     }
+
+    /**
+     * Which way out to try, decided before anything is started.
+     *
+     * There is only one attempt in a process, so this is the whole decision. The remembered
+     * route leads, and the chained one is silently skipped when there is nothing live to chain
+     * onto - which on a cold race is always, since if something were already carrying traffic
+     * the racer would not still be looking.
+     */
+    private fun chooseRoute(): Route {
+        val remembered = runCatching { memory().readText().trim() }.getOrNull()
+        carrierPort = usableCarrier() ?: -1
+        if (remembered == Route.CARRIER.name && carrierPort > 0) return Route.CARRIER
+        return Route.BRIDGES
+    }
+
+    private fun other(route: Route): Route =
+        if (route == Route.BRIDGES) Route.CARRIER else Route.BRIDGES
 
     /** Whether a real request through this port comes back. */
     private suspend fun carries(port: Int): Boolean = withContext(Dispatchers.IO) {
@@ -247,13 +258,6 @@ class TorEngine(
         if (hop == binder?.service?.socksPort) return null
         if (!SocksProbe.opens(LOOPBACK, hop, CARRIER_CHECK_MS)) return null
         return hop
-    }
-
-    /** Remembered route first, then the other one. */
-    private fun routes(): List<Route> {
-        val remembered = runCatching { memory().readText().trim() }.getOrNull()
-        val first = Route.entries.firstOrNull { it.name == remembered } ?: return Route.entries
-        return listOf(first) + Route.entries.filter { it != first }
     }
 
     private fun remember(route: Route) {

@@ -129,20 +129,7 @@ fun GozarScreen(onToggle: () -> Unit) {
 
         ConnectButton(connected = connected, working = working, onClick = onToggle)
 
-        Spacer(Modifier.height(14.dp))
-
-        // Directly beneath the button, because it answers the question the button raises: it is
-        // connected, but to where. Small on purpose — it is a fact about the connection, not a
-        // control. There is nothing to pick here, since which way out carries the tunnel is
-        // decided by whichever one proved fastest, and giving it the weight of a card would
-        // imply a choice that does not exist.
-        //
-        // Only while connected, and only once the far side has answered. Either it is a
-        // measurement or it is not shown; a placeholder that turns into a country would read
-        // like the app guessing and then correcting itself.
-        ExitBadge(visible = connected && state.exit.isNotEmpty(), place = state.exit)
-
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(18.dp))
 
         Text(
             text = state.note,
@@ -167,54 +154,6 @@ fun GozarScreen(onToggle: () -> Unit) {
             },
         )
         Spacer(Modifier.height(22.dp))
-    }
-}
-
-/**
- * The country the tunnel is exiting in.
- *
- * Kept to one line and no chrome on purpose. It is a fact about the connection, not a control —
- * there is nothing to pick here, because which endpoint carries the tunnel is decided by which
- * one proved fastest, and offering a country to choose would imply otherwise.
- *
- * The space it occupies is held whether or not there is anything to say, so the button and the
- * counters do not jump down the screen the moment a lookup comes back.
- */
-@Composable
-private fun ExitBadge(visible: Boolean, place: String) {
-    Box(
-        modifier = Modifier.fillMaxWidth().height(28.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        if (!visible) return@Box
-
-        // The flag arrives glued to the country name in one string. Split here rather than
-        // further down so the two can be sized apart: the flag is what the eye lands on and it
-        // wants to be a touch larger than the word beside it, while the word itself reads better
-        // small, spaced and upper-case than it does as a second full-size label.
-        val flag = place.substringBefore(' ', "")
-        val country = place.substringAfter(' ', place).trim()
-
-        Row(
-            modifier = Modifier
-                .clip(RoundedCornerShape(14.dp))
-                .background(GozarColors.Card)
-                .border(1.dp, GozarColors.Hairline, RoundedCornerShape(14.dp))
-                .padding(start = 9.dp, end = 12.dp, top = 4.dp, bottom = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            if (flag.isNotEmpty()) {
-                Text(text = flag, fontSize = 14.sp)
-                Spacer(Modifier.width(7.dp))
-            }
-            Text(
-                text = country.uppercase(),
-                color = GozarColors.Muted,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.SemiBold,
-                letterSpacing = 0.7.sp,
-            )
-        }
     }
 }
 
