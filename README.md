@@ -32,6 +32,8 @@ They're deliberately nothing alike on the wire. Whoever learns to spot one hasn'
 
 **The edge one** speaks MASQUE over HTTP/3 to Cloudflare's own anycast edge. It carries no server list at all, which makes it the only one that can work on a fresh install, on an operator the app has never seen, or on a day when every list has gone stale. It has three gears — quick, then thorough with obfuscation and a split handshake, then tunnel-inside-tunnel — and it remembers which gear worked here.
 
+If the tunnel ever falls onto it — because the quic path got throttled, say — the app moves back off it as soon as the better path is warm again. Reacting to failure isn't enough when the fallback isn't failing, it's just worse.
+
 It's deliberately held back six seconds at the start. It comes up in three or four seconds nearly every time, so left alone it won every race — and what it wins with is a tunnel that comes out in the same country your phone is in, because that network is location-preserving by design. It's meant to be the thing that always works, not the thing that always wins.
 
 **Tor** is three hops of volunteer relays, reached through a pluggable transport. Slow, can't carry UDP, and gets through things nothing else does. It's the safety net, not the main road.

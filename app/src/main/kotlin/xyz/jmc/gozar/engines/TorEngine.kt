@@ -121,6 +121,18 @@ class TorEngine(
     // well inside this.
     override val probeTimeoutMs: Int = 15_000
 
+    /**
+     * Started only when nothing else has got out in twelve seconds.
+     *
+     * 🚨 Not politeness about battery, although it is that too. This engine gets exactly ONE start
+     * per run of the app — see [start] — and nothing can give it another, so starting it during a
+     * race that something else is about to win spends the last way out on nothing. A device log
+     * showed the whole cost of that in two lines: on one launch it came up, proved itself and was
+     * shut down unused because the reserve slot was already taken, and on the next connect the
+     * only thing it could say was that it had already had its turn.
+     */
+    override val launchDelayMs: Long = 12_000L
+
     /** The fallback, and the second thing tried. See Engine.label for why this is not the name. */
     override val label: String = "path 2"
 

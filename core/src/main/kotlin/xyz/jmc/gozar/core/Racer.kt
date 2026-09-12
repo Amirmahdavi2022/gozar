@@ -59,6 +59,9 @@ class Racer(
     private var refiller: Job? = null
     private var stopping = false
 
+    /** How many times this session has moved off a fallback. See [preferBetter]. */
+    @Volatile private var swapsOffFallback = 0
+
     /**
      * The network the live tunnel was raced on.
      *
@@ -89,6 +92,9 @@ class Racer(
          * nobody pays for it.
          */
         const val STANDBY_EVERY_TICKS = 4L
+
+        /** How many times one session may move off a fallback before it stops trying. */
+        const val MAX_PREFERENCE_SWAPS = 3
 
         /** A win older than this stops counting as recent. */
         const val RECENT_WIN_MS = 72L * 60 * 60 * 1000
@@ -127,6 +133,18 @@ class Racer(
         order.forEachIndexed { index, engine ->
             scope.launch {
                 delay(index * LAUNCH_STAGGER_MS + engine.launchDelayMs)
+
+                // 🚨 The race may already be over by the time this one's turn comes round, and
+                // starting anyway is not harmless. Three cores coming up at once fight over the
+                // radio during the very seconds the user is watching the button, for a slot that
+                // holds exactly one reserve — so at most one of them was ever going to be kept.
+                // Worse, one of the engines here gets a single start per run of the app and
+                // nothing can give it another, so spending it on a race that is already won is
+                // spending the last way out on nothing.
+                if (lock.withLock { active != null }) {
+                    finished.send(null)
+                    return@launch
+                }
 
                 val startedAt = clock()
 
@@ -247,7 +265,47 @@ class Racer(
         refiller = scope.launch {
             verifyStandby()
             fillStandby()
+            preferBetter()
         }
+    }
+
+    /**
+     * Moves off a fallback once something better is warm behind it.
+     *
+     * 🔑 Without this the app is one bad minute away from spending the rest of the session on its
+     * worst way out. A device log showed it: the live path was throttled, the floor correctly
+     * moved the tunnel onto the fallback, the good path came back up and was held warm a few
+     * seconds later — and nothing ever moved back, because every mechanism here is built to react
+     * to failure and the fallback was not failing. It was merely the worse of the two.
+     *
+     * "Better" is not a judgement made here. An engine that asks to be launched late is declaring
+     * itself the thing that always works rather than the thing that should win, and that is the
+     * only signal used.
+     *
+     * Capped, because the alternative is flapping: a preferred path that keeps dying would be
+     * promoted, fail, hand back, be rebuilt as the reserve and be promoted again, for ever.
+     */
+    private suspend fun preferBetter(): Boolean {
+        if (swapsOffFallback >= MAX_PREFERENCE_SWAPS) return false
+
+        val (current, warm) = lock.withLock {
+            if (stopping) return false
+            (active ?: return false) to (standby ?: return false)
+        }
+        if (current.engine.launchDelayMs <= warm.engine.launchDelayMs) return false
+
+        // Held to the same standard as any other promotion: the tun is about to be pointed at it.
+        if (!prober.through(warm.session.socksPort, warm.engine.probeTimeoutMs)) return false
+
+        val moved = promoteStandby() ?: return false
+        swapsOffFallback++
+        log("${warm.engine.label} is back, moving off the fallback")
+        onSwitch(moved)
+        // Directly rather than through ensureStandby: this is running inside the refill job, and
+        // that guard would see its own coroutine still active and quietly do nothing, leaving the
+        // slot the promotion just emptied unfilled until the next tick.
+        fillStandby()
+        return true
     }
 
     /**
@@ -429,6 +487,7 @@ class Racer(
     suspend fun stop() {
         watcher?.cancel()
         refiller?.cancel()
+        swapsOffFallback = 0
         val (a, s) = lock.withLock {
             stopping = true
             val pair = active to standby
