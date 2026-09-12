@@ -47,12 +47,12 @@ done
 
 # A source that answers with a base64 blob is left as it is: the parser on the phone handles both
 # shapes, and decoding here would only add a second place for it to be got wrong.
-# 🚨 hysteria2 and hy2 belong here. They were left out when the quic engine was added, and the
-# consequence was that the engine shipped with nothing whatsoever to dial: it stood down on every
-# launch with "nothing to bootstrap from yet", which is the exact "three engines on paper, one on
-# the wire" failure this seed exists to prevent. Adding a protocol to ConfigSources.java is only
-# half the job - it has to survive this line too.
-grep -aoE '(vless|trojan|ss|hysteria2|hy2)://[^[:space:]"<]+' "$tmp" | sort -u | head -900 > "$out" || true
+# 🚨 hysteria2 and hy2, and nothing else. Adding or removing a protocol in ConfigSources.java is
+# only half the job — it has to survive this line too, and the last time the two drifted apart the
+# engine shipped with nothing whatsoever to dial and stood down on every launch with "nothing to
+# bootstrap from yet". The other schemes are gone because the core that spoke them is gone; a seed
+# full of vless lines would just be weight nothing can dial.
+grep -aoE '(hysteria2|hy2)://[^[:space:]"<]+' "$tmp" | sort -u | head -900 > "$out" || true
 
 lines="$(wc -l < "$out" | tr -d ' ')"
 echo "seed: $ok/${#urls[@]} sources, $lines endpoints -> $out"

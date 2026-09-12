@@ -21,7 +21,7 @@ import java.nio.charset.StandardCharsets;
  * <p>Deliberately free of Android and of any HTTP library, so it runs on a desktop JVM and is
  * tested against a real socket rather than a mock.
  */
-final class SocksProbe {
+public final class SocksProbe {
 
     /**
      * Captive-portal check endpoints: each answers a tiny reply and nothing else, so a whole
@@ -160,7 +160,7 @@ final class SocksProbe {
      * which is the question worth asking about a carrier that may have died under a round in
      * flight. Sending real traffic through it would measure the tunnel beyond it as well.
      */
-    static boolean opens(String host, int port, int timeoutMs) {
+    public static boolean opens(String host, int port, int timeoutMs) {
         try (java.net.Socket socket = new java.net.Socket()) {
             socket.connect(new java.net.InetSocketAddress(host, port), timeoutMs);
             return socket.isConnected();
@@ -227,7 +227,7 @@ final class SocksProbe {
      * <p>This is the number worth scoring an endpoint on. A handshake time would be the time to
      * talk to loopback, which is the same one millisecond for every endpoint, working or dead.
      */
-    static long latencyMillis(String proxyHost, int proxyPort, int timeoutMs) {
+    public static long latencyMillis(String proxyHost, int proxyPort, int timeoutMs) {
         return exchangeMillis(proxyHost, proxyPort, timeoutMs);
     }
 

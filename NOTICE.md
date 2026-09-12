@@ -20,23 +20,11 @@ this repository and a copy will be provided.
 Gozar runs it as a separate process and talks to it over SOCKS on loopback. It is not linked into
 the app, and no part of it is copied into Gozar's own sources.
 
-## Xray-core — `libxray.so`
-
-**MPL-2.0.** Source: <https://github.com/XTLS/Xray-core>
-
-Shipped unmodified. Built from a pinned tag by `scripts/fetch-native.sh`.
-
 ## hysteria — `libquic.so`
 
 **MIT.** Source: <https://github.com/apernet/hysteria>
 
-Shipped unmodified. Built from a pinned tag.
-
-## ByeDPI — `libbyedpi.so`
-
-**MIT.** Source: <https://github.com/hufrea/byedpi>
-
-Shipped unmodified. Built from a pinned tag.
+Shipped unmodified. Built from a pinned tag by `scripts/fetch-native.sh`.
 
 ## hev-socks5-tunnel — `libhev-socks5-tunnel.so`
 

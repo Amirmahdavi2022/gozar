@@ -18,7 +18,7 @@ import java.util.concurrent.atomic.AtomicLongArray;
  * the round would take the first thread the scheduler happened to wake, which is not the same
  * thing.
  *
- * <p>Nothing here decides which endpoint wins - {@link StealthBatch#best} still does that, from
+ * <p>Nothing here decides which endpoint wins - the caller still does that, from
  * whatever answered. This only decides when to stop waiting.
  *
  * <p>Free of Android and of any socket, so the timing can be tested against a stub prober on a

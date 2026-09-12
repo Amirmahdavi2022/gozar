@@ -26,7 +26,7 @@ import java.util.Locale;
  * Automatic; it just never satisfies a country the user picked.
  *
  * <p><b>Why the list is short.</b> Every country below was fetched and counted, keeping only the
- * ones Xray can actually dial — {@link XrayConfig#supports} rules out hysteria2 and tuic, which is
+ * ones Xray can actually dial — the engine's own filter rules out what it cannot speak, which is
  * most of some countries' supply. Places with a handful of endpoints were left out on purpose: a
  * country that offers three servers is a country that fails, and failing after the user chose is
  * worse than never offering.

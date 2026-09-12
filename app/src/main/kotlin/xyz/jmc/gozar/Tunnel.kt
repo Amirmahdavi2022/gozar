@@ -69,6 +69,17 @@ object Tunnel {
      */
     @Volatile private var tunFd: Int = -1
 
+    /**
+     * The SOCKS port the tun is attached to right now, or -1 when nothing is up.
+     *
+     * 🔑 This is what makes the paths cooperate instead of merely taking turns. Tor on its own
+     * bootstraps on this owner's networks and then carries nothing, so when one of the other
+     * paths is already working, Tor is pointed at it and goes out through it. The endpoint-list
+     * refresh uses the same number for the same reason: the lists live exactly where they are
+     * blocked.
+     */
+    @Volatile private var livePort: Int = -1
+
     /** What the screen reads its counters from. Zeroes while nothing is up. */
     val traffic: TrafficSource get() = tun2socks ?: NoTraffic
 
@@ -82,6 +93,7 @@ object Tunnel {
     suspend fun bringUp(context: Context, tunFd: Int): Boolean {
         _phase.value = Phase.WORKING
         this.tunFd = tunFd
+        livePort = -1
         note("looking for a way out")
 
         val engines = engines(context)
@@ -125,7 +137,7 @@ object Tunnel {
             note("topping up the endpoint list through the tunnel")
             val size = Provisioner.refresh(store, socksPort, ::note)
             if (size > 0) {
-                board?.markBootstrapped("direct")
+                board?.markBootstrapped("quic")
                 note("endpoint list now holds $size")
             }
         }
@@ -182,8 +194,16 @@ object Tunnel {
     private const val LOOPBACK = "127.0.0.1"
     private const val LOCATE_TIMEOUT_MS = 12_000
 
-    /** Below this the list is worth refreshing; above it, leave the tunnel alone. */
-    private const val HEALTHY_POOL = 60
+    /**
+     * Below this the list is worth refreshing; above it, leave the tunnel alone.
+     *
+     * Raised when the sources were cut down to three hysteria2 files. A refresh used to mean half
+     * a megabyte of mixed dumps through the tunnel, so it was worth avoiding; measured on the
+     * live files it is now 82 KB, and the servers in it were republished within the last quarter
+     * of an hour. At that price a top-up on most connects is a better trade than a pool slowly
+     * going stale.
+     */
+    private const val HEALTHY_POOL = 120
 
     /**
      * The endpoint list shipped in the apk, written at build time by scripts/fetch-seed.sh.
@@ -197,6 +217,7 @@ object Tunnel {
         _exit.value = ""
         tun2socks?.stop()
         tunFd = -1
+        livePort = -1
         val current = racer
         scope.launch { current?.stop() }
         _phase.value = Phase.DOWN
@@ -216,6 +237,7 @@ object Tunnel {
 
         val tunnel = tun2socks ?: Tun2Socks(context.filesDir).also { tun2socks = it }
         val wired = tunnel.start(fd, session.socksPort, ::note)
+        livePort = if (wired) session.socksPort else -1
         note(if (wired) "tun wired on ${session.socksPort}" else "tun would not attach")
         return wired
     }
@@ -241,7 +263,10 @@ object Tunnel {
                 }.getOrNull()
             },
         ).also { pool = it }
-        return defaultEngines(context, ipt, { bridges.linesFor(it) }, store, ::note)
+        val network = { (watcher ?: NetworkWatcher(context).also { watcher = it }).current().value }
+        return defaultEngines(
+            context, ipt, { bridges.linesFor(it) }, store, { livePort }, network, ::note,
+        )
     }
 
     private fun racer(context: Context, engines: List<Engine>): Racer =

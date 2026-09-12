@@ -78,7 +78,7 @@ jobs:
           apk=$(find app/build/outputs/apk/debug -name '*.apk' | head -1)
           echo "apk: $apk"
           unzip -l "$apk" | grep -E 'lib/.*\.so' || true
-          for lib in libhev-socks5-tunnel.so libxray.so libbyedpi.so libquic.so libaether.so; do
+          for lib in libhev-socks5-tunnel.so libquic.so libaether.so; do
             if ! unzip -l "$apk" | grep -q "$lib"; then
               echo "$lib is missing from the apk"
               exit 1

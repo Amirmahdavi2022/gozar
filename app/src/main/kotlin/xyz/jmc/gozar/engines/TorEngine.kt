@@ -19,7 +19,8 @@ import xyz.jmc.gozar.core.Session
 import xyz.jmc.gozar.core.Shape
 import xyz.jmc.gozar.direct.HysteriaEngine
 import xyz.jmc.gozar.direct.PoolStore
-import xyz.jmc.gozar.direct.XrayEngine
+import xyz.jmc.gozar.direct.SocksProbe
+import java.io.File
 
 /**
  * Transport names as IPtProxy knows them. These strings are the API — they are
@@ -54,11 +55,36 @@ object Transport {
  *
  * A second bet has to be a different program with its own socket. That is the
  * next engine, not another name for this one.
+ *
+ * <b>Two routes out, and the second one is why the paths are worth having together.</b> On this
+ * owner's own network Tor bootstrapped to a hundred percent, twice, on two different operators,
+ * published its port — and then carried nothing at all. That is not a broken bootstrap and no
+ * amount of waiting fixes it: the bridge answered, the circuit was built, and the streams through
+ * it went nowhere. So when another path is already carrying traffic, this one can be told to make
+ * its own connections through that path instead of out of this network directly: plain Tor, no
+ * bridges, no transports, one line of configuration. Tor is then three hops behind a tunnel that
+ * already works, which is slower and completely different to block.
+ *
+ * 🚨 Worth being honest about what that costs. Chained, this stops being an independent bet — if
+ * the path underneath it dies, this dies with it. So the direct route with bridges is always
+ * tried first, and the chained route is what happens when the direct one has proved, on this
+ * network, that it comes up and carries nothing. Which route won is remembered per network, so
+ * the next connect does not pay for the discovery again.
  */
 class TorEngine(
     private val context: Context,
     private val controller: Controller,
     private val bridges: (String) -> List<String>,
+    /**
+     * The SOCKS port of whichever path is carrying traffic right now, or -1 when nothing is.
+     *
+     * Read at the moment it is needed rather than captured, because the answer changes every time
+     * the racer moves the tunnel, and a number captured at construction would point at a process
+     * that is long gone.
+     */
+    private val carrier: () -> Int = { -1 },
+    /** What the network calls itself, so the winning route is remembered against the right one. */
+    private val network: () -> String = { "unknown" },
     private val log: (String) -> Unit = {},
 ) : Engine {
 
@@ -72,7 +98,17 @@ class TorEngine(
      * bare cancellation from the racer. The previous 25s was shorter than a
      * Snowflake rendezvous, which is why nothing ever won.
      */
-    override val deadlineMs: Long = BOOTSTRAP_TIMEOUT_MS + 90_000L
+    /**
+     * Room for both routes, because there are two of them now.
+     *
+     * 🚨 Long, and it costs the user nothing in the case that looks alarming. A cold race can
+     * only ever run the first route: the second one needs a path that is already carrying
+     * traffic, and if one existed the racer would have handed the tunnel over already. So the
+     * second route is only ever paid for in the background, refilling the reserve behind a
+     * connection that is working. Cutting this to fit the cold case would cancel the chained
+     * route halfway through, every time, which is the same as not having built it.
+     */
+    override val deadlineMs: Long = 300_000L
 
     /**
      * Measured on a real phone: a full bootstrap took 57 seconds and the first request after it
@@ -112,24 +148,122 @@ class TorEngine(
         }
     }
 
-    override suspend fun start(): Session = withContext(Dispatchers.IO) {
-        val plugins = startTransports()
-        check(plugins.isNotEmpty()) { "no transport came up, so tor has nothing to dial through" }
-        log("path 2 has ${plugins.size} transports listening")
+    /** How this engine reaches the rest of the world. */
+    private enum class Route(val bootstrapMs: Long) {
+        /**
+         * Out of this network directly, through whichever pluggable transports started.
+         *
+         * Two minutes, and it is generous on purpose: snowflake has to find a volunteer through a
+         * broker before tor can begin, and on a bad night that is slow without being broken.
+         */
+        BRIDGES(120_000L),
 
-        writeTorrc(plugins)
+        /**
+         * Out through the path that is already carrying traffic. Plain tor, no transports, so a
+         * rendezvous with a volunteer is not part of the wait and this is the quicker of the two.
+         */
+        CARRIER(75_000L),
+    }
+
+    override suspend fun start(): Session = withContext(Dispatchers.IO) {
+        var reason = "no route was available"
+
+        for (route in routes()) {
+            stop()
+            val port = runCatching { attempt(route) }
+                .onFailure { reason = it.message ?: "tor would not start" }
+                .getOrNull()
+
+            if (port != null) {
+                remember(route)
+                log("path 2 is up, socks on $port")
+                return@withContext Session(socksPort = port, engine = name, shape = shape)
+            }
+        }
+
+        stop()
+        error(reason)
+    }
+
+    /**
+     * One route, all the way to a port that has actually carried something.
+     *
+     * @return the SOCKS port, or null when this route did not work
+     */
+    private suspend fun attempt(route: Route): Int? {
+        when (route) {
+            Route.BRIDGES -> {
+                val plugins = startTransports()
+                check(plugins.isNotEmpty()) { "no transport came up, so tor has nothing to dial through" }
+                log("path 2 has ${plugins.size} transports listening")
+                writeTorrc(plugins, hop = -1)
+            }
+
+            Route.CARRIER -> {
+                val hop = usableCarrier() ?: return null
+                log("path 2 is going out through the path that already works")
+                writeTorrc(emptyMap(), hop = hop)
+            }
+        }
 
         launchService()
 
-        val up = withTimeoutOrNull(BOOTSTRAP_TIMEOUT_MS) { awaitBootstrap() }
+        val up = withTimeoutOrNull(route.bootstrapMs) { awaitBootstrap() }
         check(up == true) {
             "tor got no further than ${lastPhase.ifEmpty { "not started" }} " +
-                "in ${BOOTSTRAP_TIMEOUT_MS / 1000}s"
+                "in ${route.bootstrapMs / 1000}s"
         }
 
         val port = socksPort()
-        log("path 2 is up, socks on $port")
-        Session(socksPort = port, engine = name, shape = shape)
+
+        // 🚨 Asked here rather than left to the racer, and this is the whole point of having two
+        // routes. The racer gets one answer per engine: if it probes a bootstrapped Tor that
+        // carries nothing, the engine is written off for the session and the second route is
+        // never reached. A device log showed exactly that happening twice in a row on two
+        // different networks - "path 2 is up, socks on 9050" and then, thirty seconds later,
+        // "came up on port 9050 and carried nothing".
+        if (!carries(port)) {
+            log("path 2 came up on $port and nothing came back through it")
+            return null
+        }
+        return port
+    }
+
+    /** Whether a real request through this port comes back. */
+    private suspend fun carries(port: Int): Boolean = withContext(Dispatchers.IO) {
+        SocksProbe.latencyMillis(LOOPBACK, port, SELF_CHECK_MS) >= 0
+    }
+
+    /**
+     * The live path's port, if there is one and it is not this engine's own.
+     *
+     * Checked for real rather than trusted: after a failure the racer tears the old path down and
+     * races again, and for those few seconds the remembered port belongs to a process that has
+     * already exited. Chaining onto it would cost a whole bootstrap to discover that.
+     */
+    private fun usableCarrier(): Int? {
+        val hop = runCatching { carrier() }.getOrNull() ?: return null
+        if (hop <= 0) return null
+        if (hop == binder?.service?.socksPort) return null
+        if (!SocksProbe.opens(LOOPBACK, hop, CARRIER_CHECK_MS)) return null
+        return hop
+    }
+
+    /** Remembered route first, then the other one. */
+    private fun routes(): List<Route> {
+        val remembered = runCatching { memory().readText().trim() }.getOrNull()
+        val first = Route.entries.firstOrNull { it.name == remembered } ?: return Route.entries
+        return listOf(first) + Route.entries.filter { it != first }
+    }
+
+    private fun remember(route: Route) {
+        runCatching { memory().writeText(route.name) }
+    }
+
+    /** One file per network: a route that works on wifi says nothing about a mobile operator. */
+    private fun memory(): File {
+        val slug = network().lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-')
+        return File(context.filesDir, "tor-route-${slug.ifEmpty { "unknown" }}")
     }
 
     override fun stop() {
@@ -184,11 +318,22 @@ class TorEngine(
      * tells us over its control port, and guessing it is how you end up
      * probing a port nothing is listening on.
      */
-    private fun writeTorrc(plugins: Map<String, Int>) {
+    private fun writeTorrc(plugins: Map<String, Int>, hop: Int) {
         val lines = buildList {
-            add("UseBridges 1")
             add("ClientOnly 1")
             add("AvoidDiskWrites 1")
+
+            if (hop > 0) {
+                // 🔑 Plain Tor through a proxy, and deliberately with no bridges and no transports
+                // at all. A bridge exists to hide that this is Tor from whoever is watching this
+                // network - and on this route nobody on this network can see anything but the
+                // tunnel underneath. Keeping the transports would add a hop, a second thing to
+                // fail, and minutes to the bootstrap, in exchange for nothing.
+                add("Socks5Proxy 127.0.0.1:$hop")
+                return@buildList
+            }
+
+            add("UseBridges 1")
             plugins.forEach { (transport, port) ->
                 add("ClientTransportPlugin $transport socks5 127.0.0.1:$port")
             }
@@ -283,13 +428,6 @@ class TorEngine(
     }
 
     private companion object {
-        /**
-         * Generous on purpose. Snowflake has to find a volunteer through a
-         * broker before Tor can even begin, and on a bad night that is slow
-         * without being broken.
-         */
-        const val BOOTSTRAP_TIMEOUT_MS = 120_000L
-
         const val SOCKS_PORT_TRIES = 20
         const val SOCKS_PORT_WAIT_MS = 250L
 
@@ -298,6 +436,21 @@ class TorEngine(
 
         const val PHASE_POLL_MS = 750L
 
+        const val LOOPBACK = "127.0.0.1"
+
+        /**
+         * How long the engine gives its own first request before calling the route dead.
+         *
+         * Longer than the racer's probe on purpose. This one is asked once, at the moment a fresh
+         * circuit opens its very first stream, which is the slowest request Tor will ever make -
+         * measured on a real phone at over eight seconds and sometimes over thirty. Getting this
+         * wrong in the tight direction throws away a route that works.
+         */
+        const val SELF_CHECK_MS = 40_000
+
+        /** Long enough to learn whether a loopback port has a process behind it. */
+        const val CARRIER_CHECK_MS = 800
+
         val PROGRESS = Regex("PROGRESS=(\\d+)")
     }
 }
@@ -305,23 +458,30 @@ class TorEngine(
 /**
  * Builds the engine list.
  *
- * Three bets, and they are bets on different things rather than three names for one.
+ * Three ways out, and they are bets on three different things rather than three names for one.
  *
- * Tor is slow and gets through when nothing else does: three hops of volunteer relays, reached by
- * whichever pluggable transport answered, and no fixed address for anyone to block. The direct
- * engine is one hop to a public endpoint speaking what looks like an ordinary TLS session, which
- * is fast and, being ordinary, is also the first thing a censor learns to spot.
+ * **path 4** speaks MASQUE over HTTP/3 to Cloudflare's own anycast edge. It carries no list of
+ * servers, so it is the only one that can win on a fresh install, on an operator the app has
+ * never seen, or after every list has gone stale.
  *
- * The third is QUIC over UDP with its handshake obfuscated to random bytes. It exists because
- * the first two are both TCP, and a device log showed exactly the failure a UDP path does not
- * share: a TLS tunnel coming up in three seconds and being throttled to nothing thirty seconds
- * later. It costs almost nothing to have — a quarter of every public endpoint list is hysteria2,
- * and until it was added every one of those lines was fetched, parsed, and thrown away.
+ * **path 3** is QUIC over UDP with its handshake obfuscated to random bytes, dialling public
+ * hysteria2 servers. One hop, and the fastest thing here when it lands on a good server.
  *
- * Nothing is shared between any of them. Different program, different process, different socket,
- * different shape on the wire — so a rule that kills one has no reason to touch the others, and
- * none can pull another down. That is what makes holding the loser warm behind the winner worth
- * anything at all.
+ * **path 2** is Tor: three hops of volunteer relays, reached either through a pluggable transport
+ * or - when the other two are already up and Tor on its own carries nothing - through the tunnel
+ * one of them is holding. Slow, and it gets through things nothing else does.
+ *
+ * 🚨 The engine that used to sit in front of these is gone, and it was deleted on the owner's own
+ * measurements rather than on taste. It dialled vless and trojan endpoints out of mixed public
+ * dumps and its rounds came back with one or two answers out of forty, over and over, on two
+ * different operators. As a warm standby it went quiet about once a minute and paid for a full
+ * forty-eight-port search each time, behind a tunnel that was working. Ranking, probing, scoring
+ * and shaping were all correct; all of it was rearranging dead addresses, and the cost of doing
+ * so came out of the connection the user was actually on. Removing it also took a TLS core and a
+ * shaping proxy out of the build.
+ *
+ * Nothing is shared between the three. Different program, different process, different socket,
+ * different shape on the wire - so a rule that kills one has no reason to touch the others.
  *
  * 🚨 Order matters on a first launch only: the scoreboard reorders them by what has actually
  * worked on this network, so after one success this list stops deciding anything.
@@ -331,14 +491,14 @@ internal fun defaultEngines(
     controller: Controller,
     bridges: (String) -> List<String>,
     pool: PoolStore,
+    carrier: () -> Int,
+    network: () -> String,
     log: (String) -> Unit = {},
 ): List<Engine> = listOf(
-    // First on the list, and first for a reason rather than for tidiness. It is the only engine
-    // here that needs nothing fetched before it can try, so on a fresh install, on an operator the
-    // app has never seen, or after the endpoint list has gone stale, it is the only one that can
-    // win at all. The scoreboard reorders this list from the second launch onwards anyway.
+    // First, and for a reason rather than for tidiness: it is the only engine here that needs
+    // nothing fetched before it can try, so on a fresh install it is the only one that can win at
+    // all.
     EdgeEngine(context, log),
-    XrayEngine(context, pool, log),
     HysteriaEngine(context, pool, log),
-    TorEngine(context, controller, bridges, log),
+    TorEngine(context, controller, bridges, carrier, network, log),
 )

@@ -6,7 +6,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 
 /**
- * Where the Stealth engine's endpoints come from.
+ * Where the quic engine's endpoints come from.
  *
  * Every one of these pools publishes a plain text list of public proxy URIs and rebuilds it on a
  * schedule. None of them is trustworthy on its own, and the honest reason is written on their own
@@ -17,7 +17,7 @@ import java.util.List;
  *
  * Two rules that matter more than the source list:
  *
- *  - Fetching goes THROUGH the tunnel, never direct. On the networks Panther exists for, the hosts
+ *  - Fetching goes THROUGH the tunnel, never direct. On the networks this app exists for, the hosts
  *    below are blocked, so a direct fetch is the one thing guaranteed to fail exactly when it is
  *    needed. The carrier tunnel gets us to them.
  *  - A source that fails is skipped, never fatal. Sources disappear, get renamed, go private. One
@@ -34,42 +34,35 @@ final class ConfigSources {
      * The pools, most trusted first. Order matters: on a tie the earlier source's entry is kept,
      * and the earlier entries are the ones offered to the tester first.
      *
-     * Every path here was fetched, parsed and counted before being written down. Two numbers
-     * decided the list: how many endpoints this core can actually dial out of a source, and how
-     * many of those no other source already has. A source that duplicates another is bytes pulled
-     * through a tunnel for nothing.
+     * 🚨 Three files, all of them hysteria2 only, and the list got this short on measurement
+     * rather than on taste. The app used to pull eight mixed dumps through the tunnel — around
+     * half a megabyte a refresh — for a pool that was almost entirely vless and trojan, which
+     * nothing here dials any more. Counted against the live files on 2026/09/12:
      *
-     * Measured 2026/09/04 against the live files: 8 sources, ~500 KB, about 1600 dialable
-     * endpoints. Four things were dropped on that evidence. The hysteria2 file yielded ZERO
-     * dialable endpoints, because Xray cannot dial hysteria2 at all - 28 KB per refresh for
-     * nothing. The two per-country files were 1 MB between them for one country each, and country
-     * choice fetches its own list on demand now. And two other candidates turned out to be exact
-     * subsets of sources already here.
+     * <pre>
+     *   radikal hysteria2      32 KB   199 lines   155 servers   155 new
+     *   tgparse hysteria2      44 KB   176 lines    62 servers     8 new
+     *   tgparse hy2             6 KB    38 lines    37 servers     3 new
+     *   barry All_Configs    1817 KB   198 lines    96 servers     0 new
+     *   epodonios All_Configs 1698 KB  128 lines    96 servers     0 new
+     * </pre>
      *
-     * Eight repositories rather than three, which is the point: the failure that matters is not
-     * one file going missing, it is one publisher going quiet.
+     * The two big dumps are three and a half megabytes between them and contribute not one
+     * server the small files do not already have. So they are gone, and what is left is 82 KB
+     * for 166 distinct servers — a list that can be refreshed over a bad link without the
+     * refresh itself being the reason the link is bad.
      *
-     * These are fetched as data, not vendored into the repo — we read a public list at runtime the
-     * way any subscription client does, rather than redistributing anyone's files.
+     * Three publishers rather than one, because the failure that matters is not a file going
+     * missing, it is a publisher going quiet.
+     *
+     * These are fetched as data, not vendored into the repo — we read a public list at runtime
+     * the way any subscription client does, rather than redistributing anyone's files.
      */
     static final String[][] SOURCES = {
             // host, path, label
-            {"raw.githubusercontent.com", "/0xRadikal/Free-v2ray-Configs/main/top100.txt", "radikal-top"},
-            {"raw.githubusercontent.com", "/MahanKenway/Freedom-V2Ray/main/configs/vless_sub.txt", "freedom-vless"},
-            {"raw.githubusercontent.com", "/MahanKenway/Freedom-V2Ray/main/configs/trojan_sub.txt", "freedom-trojan"},
-            {"raw.githubusercontent.com", "/iboxz/free-v2ray-collector/main/main/mix.txt", "iboxz-mix"},
-            {"raw.githubusercontent.com", "/V2RayRoot/V2RayConfig/main/Config/vless.txt", "v2rayroot-vless"},
-            {"raw.githubusercontent.com", "/V2RayRoot/V2RayConfig/main/Config/shadowsocks.txt", "v2rayroot-ss"},
-            {"raw.githubusercontent.com", "/sinavm/SVM/main/lite/subscriptions/xray/normal/reality", "sinavm-reality"},
-            {"raw.githubusercontent.com", "/barry-far/V2ray-Config/main/Splitted-By-Protocol/trojan.txt", "barry-trojan"},
-            // 🚨 Added when the third engine was. Every source above this line carries vless,
-            // trojan and ss almost exclusively, so without a feed of its own the quic engine had
-            // a pool of whatever handful of hysteria2 lines happened to fall out of the mixed
-            // dumps - which on a bad day is none, and an engine with nothing to dial is the
-            // "three engines on paper, one on the wire" problem all over again. This one is a
-            // dedicated hysteria2 list: measured live, a hundred and forty-two lines, eighty of
-            // them carrying salamander obfuscation already.
             {"raw.githubusercontent.com", "/0xRadikal/Free-v2ray-Configs/main/protocols/hysteria2.txt", "radikal-quic"},
+            {"raw.githubusercontent.com", "/Surfboardv2ray/TGParse/main/splitted/hysteria2", "tgparse-quic"},
+            {"raw.githubusercontent.com", "/Surfboardv2ray/TGParse/main/splitted/hy2", "tgparse-hy2"},
     };
 
     /** How a document is retrieved. The service supplies one that goes through the live tunnel. */
