@@ -91,9 +91,9 @@ class EdgeEngine(
      * 🚨 It must stay larger than the rungs added together, and that is a real constraint rather
      * than a margin: the ladder is cut off wherever this expires, so a rung whose window falls
      * past it can never run at all, on any network, and nothing says so. The windows below come
-     * to 210 seconds, plus each rung's port allowance on top. Change one and change this.
+     * to 300 seconds, plus each rung's port allowance on top. Change one and change this.
      */
-    override val deadlineMs: Long = 300_000L
+    override val deadlineMs: Long = 360_000L
 
     /**
      * 🚨 Held back on purpose, and it is the difference between the app being usable and not.
@@ -264,6 +264,17 @@ class EdgeEngine(
          * allowance did not.
          */
         val portWaitMs: Long = 8_000L,
+        /**
+         * The line that means this rung is actually serving.
+         *
+         * 🚨 Per rung, because the shared one is a lie on the two-hop rung. Read in the core's own
+         * source: "tunnel validated (end-to-end data confirmed)" is printed by the OUTER hop, and
+         * the two-hop path then goes hunting for an inner edge — up to six candidates at twelve
+         * seconds each — and binds its local port only once one of them answers. Watching for the
+         * outer line there means calling the rung ready roughly a minute before it can be, then
+         * killing it for not having opened a port it had not reached the code to open yet.
+         */
+        val readyMarker: String = READY,
     ) {
         /**
          * 🚨 First on purpose, and the reason is the complaint that got this whole path held back.
@@ -288,17 +299,15 @@ class EdgeEngine(
             // is worth nothing twice over here, because this rung has to do it before it can even
             // start on the hop that matters.
             listOf("--mim", "--turbo", "-4", "--quick-reconnect"),
-            // Two hops means registering, sweeping, building the outer one, and only then doing
-            // the inner one through it: every step of a single-hop connect, twice, in series. Sixty
-            // against a quick sweep that takes four, so the second hop has room and a failure is
-            // still something you can sit through.
-            60_000L,
+            // 🚨 Sized from the core's source rather than guessed at, which is what the last four
+            // numbers here were. After the outer hop is up the inner hunt alone can take six
+            // candidates at twelve seconds each — seventy two seconds in which the rung is
+            // working and silent — and the scan and the outer hop come before any of that.
+            150_000L,
             described = "two hops",
-            // The inner hop is built after the outer one reports good, so the listener comes up
-            // noticeably later here than on any single-hop rung. Generous on purpose: the wait
-            // ends the moment the port answers, so a large ceiling costs nothing when it is fast
-            // and costs everything when it is too small.
-            portWaitMs = 25_000L,
+            // Printed immediately after the socks listener is bound, so by the time this is seen
+            // the port is already open and the default allowance below is ample.
+            readyMarker = "masque-in-masque ready",
         ),
 
         /** First gateway that answers. Up in seconds when the network allows it. */
@@ -409,7 +418,7 @@ class EdgeEngine(
         // its next write and stops making progress, and from out here that is indistinguishable
         // from a network that went quiet — the tunnel would simply never come up, with no error
         // anywhere to say why.
-        val ready = drainUntilReady(reader, deadline)
+        val ready = drainUntilReady(reader, deadline, mode.readyMarker)
         watchdog.interrupt()
 
         if (!ready) {
@@ -440,14 +449,14 @@ class EdgeEngine(
         return true
     }
 
-    private fun drainUntilReady(reader: BufferedReader, deadline: Long): Boolean {
+    private fun drainUntilReady(reader: BufferedReader, deadline: Long, marker: String): Boolean {
         var complained = false
         while (System.currentTimeMillis() < deadline) {
             val running = process ?: return false
             if (!running.isAlive && !reader.ready()) return false
 
             val line = runCatching { reader.readLine() }.getOrNull() ?: return false
-            if (line.contains(READY)) return true
+            if (line.contains(marker)) return true
 
             // Only complaints are kept. The program narrates its progress cheerfully, and the last
             // cheerful line before a timeout explains nothing. Redacted on the way in rather than
