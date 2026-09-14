@@ -5,7 +5,6 @@ import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -25,8 +24,6 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -36,6 +33,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
@@ -44,11 +42,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import xyz.jmc.gozar.PathChoices
 import xyz.jmc.gozar.R
 import xyz.jmc.gozar.core.Diary
 import xyz.jmc.gozar.core.Support
-import xyz.jmc.gozar.engines.ENGINE_CATALOG
 
 private enum class Screen { HOME, SETTINGS, ABOUT, DIARY }
 
@@ -166,72 +162,12 @@ private fun SubScreen(title: String, onBack: () -> Unit, body: @Composable () ->
 }
 
 
-/**
- * One switch per way out, so a single path can be made to carry the traffic.
- *
- * The state lives in [PathChoices] rather than in this composable, and is re-read from it after
- * every change instead of being toggled locally — because the store is allowed to refuse. Turning
- * off the last remaining path does nothing, and a switch that slid across anyway would be lying
- * about what the app is going to do on the next connect.
- */
-@Composable
-private fun PathsCard() {
-    val context = LocalContext.current
-    val choices = remember { PathChoices(context) }
-    val names = remember { ENGINE_CATALOG.map { it.first } }
-    var version by remember { mutableStateOf(0) }
-    var refused by remember { mutableStateOf(false) }
-
-    Card {
-        Text(
-            stringResource(R.string.paths_title),
-            color = GozarColors.Ink,
-            fontSize = 16.sp,
-            fontWeight = FontWeight.SemiBold,
-        )
-        Spacer(Modifier.height(6.dp))
-        Text(
-            stringResource(R.string.paths_note),
-            color = GozarColors.Muted,
-            fontSize = 13.sp,
-        )
-        Spacer(Modifier.height(8.dp))
-
-        ENGINE_CATALOG.forEach { (name, label) ->
-            // Read through `version` so the row recomposes off the store, not off the switch.
-            val on = remember(version, name) { choices.allows(name) }
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Text(label, color = GozarColors.Ink, fontSize = 15.sp)
-                Switch(
-                    checked = on,
-                    onCheckedChange = { wanted ->
-                        refused = !choices.set(name, wanted, names)
-                        version++
-                    },
-                    colors = SwitchDefaults.colors(checkedTrackColor = GozarColors.Ink),
-                )
-            }
-        }
-
-        if (refused) {
-            Spacer(Modifier.height(6.dp))
-            Text(stringResource(R.string.paths_last), color = GozarColors.Muted, fontSize = 13.sp)
-        }
-    }
-}
-
 @Composable
 private fun SettingsScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     var note by remember { mutableStateOf<String?>(null) }
 
     SubScreen(title = stringResource(R.string.settings), onBack = onBack) {
-        PathsCard()
-        Spacer(Modifier.height(12.dp))
         Card {
             Text(
                 stringResource(R.string.forget_routes),
@@ -366,10 +302,13 @@ private fun Card(content: @Composable () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(18.dp))
+            // Shadow first, then the clip: a soft lift off the paper, matching the panel on the
+            // home screen so the two screens read as one app rather than two.
+            .shadow(6.dp, RoundedCornerShape(22.dp), spotColor = GozarColors.Ink)
+            .clip(RoundedCornerShape(22.dp))
             .background(GozarColors.Card)
-            .border(1.dp, GozarColors.Hairline, RoundedCornerShape(18.dp))
-            .padding(18.dp),
+            .border(1.dp, GozarColors.Hairline, RoundedCornerShape(22.dp))
+            .padding(20.dp),
     ) { content() }
 }
 
@@ -377,6 +316,7 @@ private fun Card(content: @Composable () -> Unit) {
 private fun PillButton(label: String, filled: Boolean, onClick: () -> Unit) {
     Box(
         modifier = Modifier
+            .shadow(if (filled) 8.dp else 0.dp, RoundedCornerShape(24.dp), spotColor = GozarColors.Ink)
             .clip(RoundedCornerShape(24.dp))
             .background(if (filled) GozarColors.Ink else GozarColors.Card)
             .border(1.dp, if (filled) GozarColors.Ink else GozarColors.Hairline, RoundedCornerShape(24.dp))

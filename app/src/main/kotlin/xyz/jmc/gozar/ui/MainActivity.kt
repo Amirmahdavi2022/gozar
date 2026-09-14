@@ -14,6 +14,7 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
@@ -44,6 +45,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -116,8 +119,30 @@ fun GozarScreen(onToggle: () -> Unit) {
     val connected = state.phase == UiState.Phase.CONNECTED
     val working = state.phase == UiState.Phase.CONNECTING
 
+    // A warm floor under the whole screen, brightest where the button sits and fading out well
+    // before the edges. It is the one thing that changes when the tunnel comes up, so the screen
+    // itself reports the state rather than leaving it all to a dot in the corner. Kept far below
+    // the button's own colour so it reads as light spilling off it, never as a panel.
+    val glow by animateFloatAsState(
+        targetValue = when {
+            connected -> 0.20f
+            working -> 0.11f
+            else -> 0.05f
+        },
+        animationSpec = tween(700),
+        label = "screenGlow",
+    )
+
     Column(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                Brush.radialGradient(
+                    colors = listOf(GozarColors.Ember.copy(alpha = glow), GozarColors.Paper),
+                    radius = 1100f,
+                )
+            )
+            .padding(horizontal = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         StatusLine(connected = connected, working = working)
@@ -235,7 +260,14 @@ private fun StatusLine(connected: Boolean, working: Boolean) {
             label = "statusDot",
         )
 
-        Box(Modifier.size(8.dp).clip(CircleShape).background(dot))
+        // A dot inside a soft ring of the same colour. Eight pixels of flat colour is a full
+        // stop; the ring makes it read as a light that is on.
+        Box(
+            modifier = Modifier.size(16.dp).clip(CircleShape).background(dot.copy(alpha = 0.16f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Box(Modifier.size(8.dp).clip(CircleShape).background(dot))
+        }
         Spacer(Modifier.width(8.dp))
         Text(
             text = when {
@@ -259,6 +291,23 @@ private fun ConnectButton(connected: Boolean, working: Boolean, onClick: () -> U
         label = "buttonFill",
     )
 
+    // The same two colours top and bottom rather than one flat disc. A circle lit slightly from
+    // above reads as an object you can press; a flat one reads as a sticker. The second stop is
+    // the deeper shade of whichever state it is in, so the shape survives both.
+    val shade by animateColorAsState(
+        targetValue = if (connected) GozarColors.EmberDeep else Color(0xFF2C2C34),
+        animationSpec = tween(500),
+        label = "buttonShade",
+    )
+
+    // How far the halo is pushed out, so the rings breathe with the pulse instead of sitting
+    // still behind a moving button.
+    val halo by animateFloatAsState(
+        targetValue = if (connected) 1f else 0f,
+        animationSpec = tween(600),
+        label = "halo",
+    )
+
     val pulse = rememberInfiniteTransition(label = "pulse")
     val scale by pulse.animateFloat(
         initialValue = 1f,
@@ -271,20 +320,32 @@ private fun ConnectButton(connected: Boolean, working: Boolean, onClick: () -> U
     )
 
     Box(contentAlignment = Alignment.Center) {
+        // Two rings rather than one. A single flat halo has a visible edge where it stops; two
+        // of them, the outer one fainter and wider, fall off the way light actually does.
         Box(
             modifier = Modifier
-                .size(214.dp)
-                .alpha(if (connected) 1f else 0f)
+                .size(250.dp)
+                .alpha(halo * 0.55f)
                 .clip(CircleShape)
-                .background(GozarColors.Ember.copy(alpha = 0.12f))
+                .background(GozarColors.Ember.copy(alpha = 0.10f))
+        )
+        Box(
+            modifier = Modifier
+                .size(212.dp)
+                .alpha(halo)
+                .clip(CircleShape)
+                .background(GozarColors.Ember.copy(alpha = 0.14f))
         )
 
         Box(
             modifier = Modifier
                 .scale(scale)
                 .size(178.dp)
+                // Under the clip, so the shadow follows the circle rather than a square. It is
+                // what lifts the button off the paper; without it the whole screen is flat.
+                .shadow(if (connected) 22.dp else 12.dp, CircleShape)
                 .clip(CircleShape)
-                .background(fill)
+                .background(Brush.verticalGradient(listOf(fill, shade)))
                 .clickable(onClick = onClick),
             contentAlignment = Alignment.Center,
         ) {
@@ -294,9 +355,10 @@ private fun ConnectButton(connected: Boolean, working: Boolean, onClick: () -> U
                     working -> "Cancel"
                     else -> "Connect"
                 },
-                color = if (connected) GozarColors.Ink else GozarColors.Paper,
+                color = GozarColors.Paper,
                 fontSize = 19.sp,
                 fontWeight = FontWeight.SemiBold,
+                letterSpacing = 0.4.sp,
             )
         }
     }
@@ -307,10 +369,11 @@ private fun SessionPanel(state: UiState, live: Boolean) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(18.dp))
+            .shadow(6.dp, RoundedCornerShape(22.dp), spotColor = GozarColors.Ink)
+            .clip(RoundedCornerShape(22.dp))
             .background(GozarColors.Card)
-            .border(1.dp, GozarColors.Hairline, RoundedCornerShape(18.dp))
-            .padding(vertical = 20.dp, horizontal = 18.dp),
+            .border(1.dp, GozarColors.Hairline, RoundedCornerShape(22.dp))
+            .padding(vertical = 22.dp, horizontal = 18.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Text(

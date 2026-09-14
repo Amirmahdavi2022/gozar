@@ -20,9 +20,6 @@
     <string name="saved">ذخیره شد</string>
     <string name="clear">پاک کردن</string>
     <string name="channel_note">وقتی همه‌چیز بسته شد، مسیرهای تازه اینجا گذاشته می‌شود</string>
-    <string name="paths_title">کدام راه‌ها امتحان شوند</string>
-    <string name="paths_note">گذر این‌ها را با هم مسابقه می‌دهد و اولی که جواب داد را نگه می‌دارد، پس ممکن است یکی از کندترها اصلاً شروع نشود. برای اینکه یکی از آن‌ها ترافیک را ببرد، بقیه را خاموش کن. آخرین راهِ روشن خاموش نمی‌شود.</string>
-    <string name="paths_last">همین یکی روشن مانده.</string>
     <string name="forget_routes">چیزهایی که درباره شبکه‌هایت یاد گرفته‌ام</string>
     <string name="forget_routes_note">گذر یادش می‌ماند روی هر شبکه کدام مسیر جواب داد تا دفعه بعد از همان شروع کند. پاک کردنش فقط اتصال بعدی را کندتر می‌کند، نه بدتر.</string>
     <string name="forget">پاکش کن</string>

@@ -21,9 +21,6 @@
     <string name="saved">Saved</string>
     <string name="clear">Clear</string>
     <string name="channel_note">When everything is blocked, fresh routes get posted here</string>
-    <string name="paths_title">Which ways out to try</string>
-    <string name="paths_note">Gozar races these and keeps the first one that works, so a slower one may never get started. Turn the others off to make one of them carry the traffic. The last one on can\'t be turned off.</string>
-    <string name="paths_last">That\'s the only one left on.</string>
     <string name="forget_routes">What I learned about your networks</string>
     <string name="forget_routes_note">Gozar remembers which route worked on each network so it can start there next time. Clearing it makes the next connection slower, not worse.</string>
     <string name="forget">Forget it</string>

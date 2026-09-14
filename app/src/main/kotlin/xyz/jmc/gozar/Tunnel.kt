@@ -264,23 +264,19 @@ object Tunnel {
             },
         ).also { pool = it }
         val network = { (watcher ?: NetworkWatcher(context).also { watcher = it }).current().value }
-        return PathChoices(context).filter(
-            defaultEngines(
-                context, ipt, { bridges.linesFor(it) }, store, { livePort }, network, ::note,
-            )
+        return defaultEngines(
+            context, ipt, { bridges.linesFor(it) }, store, { livePort }, network, ::note,
         )
     }
 
     /**
      * The racer for this engine list, rebuilt if the list is not the one it was made from.
      *
-     * 🚨 This is the defect that made the per-path switches do nothing at all, and it is worth
-     * spelling out because it hid so well. [Tunnel] is an object, so it lives as long as the
-     * process, and the racer it made on the first connect was reused on every connect after it —
-     * with the engine list it captured that first time. Turning a path off in settings and
-     * pressing connect therefore raced exactly the same three engines as before, and the log
-     * looked identical, because it was identical. The device log even said so out loud: "tor has
-     * already had its turn this run" across two separate connects is a process that never died.
+     * 🚨 Keep the comparison even though every connect currently asks for the same three paths.
+     * [Tunnel] is an object, so it outlives any one connect, and a racer reused across a change
+     * of lineup runs the list it captured the first time — which is exactly how a whole release
+     * shipped a settings screen that did nothing: the log was identical between connects because
+     * the engines were identical, and nothing said so.
      *
      * A racer is still kept between connects — it holds live processes, a warm standby and the
      * scoreboard, and throwing that away every time would undo the reserve. It is replaced only
