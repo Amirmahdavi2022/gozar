@@ -166,6 +166,9 @@ class EdgeEngine(
             for (mode in ladder()) {
                 stop()
                 if (run(mode)) {
+                    // Named, because "up on path 4" was true for four builds running and told
+                    // nobody which of four very different rungs had actually carried it.
+                    log("path 4 is out via ${mode.described}")
                     remember(mode)
                     return@withContext Session(PORT, name, shape)
                 }
@@ -188,9 +191,10 @@ class EdgeEngine(
         // going back to it first would spend the cheap recovery on the one rung known to be
         // failing right now.
         ladderLock.withLock {
-            for (mode in Mode.entries) {
+            for (mode in ladder()) {
                 stop()
                 if (run(mode)) {
+                    log("path 4 is back via ${mode.described}")
                     remember(mode)
                     return@withContext true
                 }
@@ -237,7 +241,12 @@ class EdgeEngine(
      * unanswered and it stops at a prompt nobody will ever type into, which from out here is
      * indistinguishable from a network that went silent.
      */
-    private enum class Mode(val flags: List<String>, val windowMs: Long) {
+    private enum class Mode(
+        val flags: List<String>,
+        val windowMs: Long,
+        /** What to call this rung in the log, where "MIM" would mean nothing to a reader. */
+        val described: String,
+    ) {
         /**
          * 🚨 First on purpose, and the reason is the complaint that got this whole path held back.
          *
@@ -260,12 +269,14 @@ class EdgeEngine(
             // registering, sweeping for the outer gateway, building it, and only then doing the
             // inner one through it — every step of a single-hop connect, twice, in series.
             75_000L,
+            described = "two hops",
         ),
 
         /** First gateway that answers. Up in seconds when the network allows it. */
         TURBO(
             listOf("--masque", "--turbo", "-4", "--quick-reconnect"),
             30_000L,
+            described = "one hop, quick sweep",
         ),
 
         /**
@@ -279,19 +290,38 @@ class EdgeEngine(
                 "--noize", "gfw", "--fragment",
             ),
             60_000L,
+            described = "one hop, full sweep",
         ),
 
         /** One tunnel inside another, for equipment that reads the outer one. */
         GOOL(
             listOf("--gool", "--thorough", "-4", "--no-quick-reconnect", "--noize", "gfw"),
             60_000L,
+            described = "tunnel in tunnel",
         ),
     }
 
+    /**
+     * The rungs to try, in order: the two-hop one, then the remembered winner, then the rest.
+     *
+     * 🚨 [MIM] is pinned to the front and the memory is never allowed to move it, and that is the
+     * whole point of this function. The memory exists to make the next connect faster by starting
+     * at whatever worked last time — which is right for every rung here except one. MIM is not a
+     * faster way to the same place, it is the only rung that changes which country the tunnel
+     * comes out of; a single-hop rung beating it on speed is exactly what it is supposed to lose
+     * to on merit and win against on purpose.
+     *
+     * This cost four builds to find. MIM failed once, the next rung succeeded and was written
+     * down as the winner, and from then on it was tried first, came up in under four seconds, and
+     * MIM was never executed again on that device — so every later change to it shipped, ran, and
+     * did nothing, while the log said only "up on path 4" and named no rung at all. The exit
+     * stayed in the country it had always been in, and nothing anywhere said why.
+     */
     private fun ladder(): List<Mode> {
+        val rest = Mode.entries.filter { it != Mode.MIM }
         val remembered = runCatching { memory.readText().trim() }.getOrNull()
-        val first = Mode.entries.firstOrNull { it.name == remembered } ?: return Mode.entries
-        return listOf(first) + Mode.entries.filter { it != first }
+        val first = rest.firstOrNull { it.name == remembered } ?: return Mode.entries
+        return listOf(Mode.MIM, first) + rest.filter { it != first }
     }
 
     private fun remember(mode: Mode) {
