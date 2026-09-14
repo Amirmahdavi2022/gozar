@@ -2,6 +2,8 @@ package xyz.jmc.gozar.engines
 
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import xyz.jmc.gozar.core.Engine
 import xyz.jmc.gozar.core.Redact
@@ -85,8 +87,13 @@ class EdgeEngine(
      * The racer stops at the first way out that proves itself, so a long deadline here costs
      * nothing when something else wins sooner. What it buys is the case that matters: when this is
      * the only thing that can get out, a sweep worth a minute beats failing in ten seconds.
+     *
+     * 🚨 It must stay larger than the rungs added together, and that is a real constraint rather
+     * than a margin: the ladder is cut off wherever this expires, so a rung whose window falls
+     * past it can never run at all, on any network, and nothing says so. The windows below come
+     * to 225 seconds. Change one and change this.
      */
-    override val deadlineMs: Long = 165_000L
+    override val deadlineMs: Long = 240_000L
 
     /**
      * 🚨 Held back on purpose, and it is the difference between the app being usable and not.
@@ -127,6 +134,9 @@ class EdgeEngine(
      */
     private val memory = File(context.filesDir, "edge-mode-2")
 
+    /** Held for the whole walk down the rungs. See the note in [start]. */
+    private val ladderLock = Mutex()
+
     @Volatile private var process: Process? = null
 
     /**
@@ -139,17 +149,29 @@ class EdgeEngine(
      */
     @Volatile private var lastWords: String = ""
 
+    /** The last thing it said before a rung ran out of time without ever complaining. */
+    @Volatile private var furthest: String = ""
+
     override suspend fun start(): Session = withContext(Dispatchers.IO) {
         check(binary.isFile && binary.canExecute()) { "no edge program in this build" }
 
-        for (mode in ladder()) {
-            stop()
-            if (run(mode)) {
-                remember(mode)
-                return@withContext Session(PORT, name, shape)
+        // 🚨 One ladder at a time, and this is not defensive tidiness — it is a defect seen in a
+        // log. The racer starts this engine to race with, and the standby keeper starts it again
+        // to hold in reserve; when the second call arrived while the first was still stepping
+        // down the rungs, the two walked the ladder together on one fixed loopback port. The
+        // first process kept the port, and every rung the second tried died instantly with
+        // "Address already in use" — so the whole ladder below the first rung was wiped out, and
+        // the message said nothing about there being two of us.
+        ladderLock.withLock {
+            for (mode in ladder()) {
+                stop()
+                if (run(mode)) {
+                    remember(mode)
+                    return@withContext Session(PORT, name, shape)
+                }
             }
+            stop()
         }
-        stop()
         error(lastWords.ifBlank { "no edge gateway answered" })
     }
 
@@ -165,14 +187,16 @@ class EdgeEngine(
         // Deliberately not the remembered mode. Whatever was remembered is what just died, so
         // going back to it first would spend the cheap recovery on the one rung known to be
         // failing right now.
-        for (mode in Mode.entries) {
-            stop()
-            if (run(mode)) {
-                remember(mode)
-                return@withContext true
+        ladderLock.withLock {
+            for (mode in Mode.entries) {
+                stop()
+                if (run(mode)) {
+                    remember(mode)
+                    return@withContext true
+                }
             }
+            stop()
         }
-        stop()
         false
     }
 
@@ -182,6 +206,26 @@ class EdgeEngine(
         runCatching {
             running.destroy()
             running.waitFor()
+        }
+        // Waiting for the child to exit is not the same as waiting for its listener to go. The
+        // next rung binds the same address within milliseconds of this returning, and a socket
+        // the kernel has not finished releasing is indistinguishable, from out here, from a
+        // second copy of us holding it.
+        waitForPortFree()
+    }
+
+    /** Blocks until nothing answers on the loopback port, or the short grace runs out. */
+    private fun waitForPortFree() {
+        val deadline = System.currentTimeMillis() + PORT_FREE_WAIT_MS
+        while (System.currentTimeMillis() < deadline) {
+            val busy = Socket().use { probe ->
+                runCatching {
+                    probe.connect(InetSocketAddress(LOOPBACK, PORT), 200)
+                    true
+                }.getOrDefault(false)
+            }
+            if (!busy) return
+            runCatching { Thread.sleep(100) }.onFailure { return }
         }
     }
 
@@ -210,7 +254,12 @@ class EdgeEngine(
          */
         MIM(
             listOf("--mim", "--balanced", "-4", "--quick-reconnect"),
-            45_000L,
+            // 🚨 Seventy-five, because forty-five was measured and it was not enough: the rung
+            // timed out twice on the owner's own network without the program ever complaining,
+            // which is what a half-built second hop looks like from out here. Two hops means
+            // registering, sweeping for the outer gateway, building it, and only then doing the
+            // inner one through it — every step of a single-hop connect, twice, in series.
+            75_000L,
         ),
 
         /** First gateway that answers. Up in seconds when the network allows it. */
@@ -255,6 +304,7 @@ class EdgeEngine(
      * @return true when the tunnel is validated and the proxy is serving
      */
     private fun run(mode: Mode): Boolean {
+        furthest = ""
         val command = listOf(
             binary.absolutePath,
             "--bind", "$LOOPBACK:$PORT",
@@ -290,7 +340,9 @@ class EdgeEngine(
         val ready = drainUntilReady(reader, deadline)
 
         if (!ready) {
-            val reason = lastWords.ifBlank { "it said nothing at all" }
+            val reason = lastWords.ifBlank {
+                if (furthest.isBlank()) "it said nothing at all" else "it got as far as: $furthest"
+            }
             log("$label found nothing on the ${mode.name.lowercase()} route: $reason")
             stop()
             return false
@@ -314,6 +366,7 @@ class EdgeEngine(
     }
 
     private fun drainUntilReady(reader: BufferedReader, deadline: Long): Boolean {
+        var complained = false
         while (System.currentTimeMillis() < deadline) {
             val running = process ?: return false
             if (!running.isAlive && !reader.ready()) return false
@@ -327,6 +380,14 @@ class EdgeEngine(
             // be logged later.
             if (line.contains(TROUBLE) || line.contains(FAILURE)) {
                 lastWords = Redact.line(line.substringAfter("] ", line)).take(MAX_REASON)
+                complained = true
+            } else if (!complained) {
+                // 🚨 Kept because "it said nothing at all" is what the log actually printed when
+                // the two-hop rung timed out, and it was worth nothing at all to read. The
+                // program narrates every stage it reaches; when it never complains and simply
+                // runs out of time, the stage it had reached is the entire diagnosis. Overwritten
+                // the moment a real complaint arrives, and redacted on the way in like one.
+                furthest = Redact.line(line.substringAfter("] ", line)).take(MAX_REASON)
             }
         }
         return false
@@ -374,5 +435,8 @@ class EdgeEngine(
 
         private const val MAX_REASON = 160
         private const val PORT_WAIT_MS = 4_000L
+
+        /** Grace for the kernel to release the listener after the child is gone. */
+        private const val PORT_FREE_WAIT_MS = 3_000L
     }
 }
