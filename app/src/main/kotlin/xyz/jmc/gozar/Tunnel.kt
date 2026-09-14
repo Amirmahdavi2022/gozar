@@ -264,8 +264,10 @@ object Tunnel {
             },
         ).also { pool = it }
         val network = { (watcher ?: NetworkWatcher(context).also { watcher = it }).current().value }
-        return defaultEngines(
-            context, ipt, { bridges.linesFor(it) }, store, { livePort }, network, ::note,
+        return PathChoices(context).filter(
+            defaultEngines(
+                context, ipt, { bridges.linesFor(it) }, store, { livePort }, network, ::note,
+            )
         )
     }
 

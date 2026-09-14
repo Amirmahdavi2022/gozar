@@ -518,3 +518,17 @@ internal fun defaultEngines(
     HysteriaEngine(context, pool, log),
     TorEngine(context, controller, bridges, carrier, network, log),
 )
+
+/**
+ * The same paths, named, for screens that need to list them without building them.
+ *
+ * Deliberately here rather than next to the screen that draws it: building a real engine needs a
+ * tor controller, an endpoint pool and a live port, none of which a settings screen has any
+ * business holding. Kept directly under [defaultEngines] so that adding a path there and
+ * forgetting it here is a change you have to look straight at.
+ */
+internal val ENGINE_CATALOG: List<Pair<String, String>> = listOf(
+    "edge" to "path 4",
+    "quic" to "path 3",
+    "tor" to "path 2",
+)

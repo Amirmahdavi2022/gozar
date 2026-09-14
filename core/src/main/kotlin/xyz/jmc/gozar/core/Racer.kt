@@ -142,6 +142,11 @@ class Racer(
                 // nothing can give it another, so spending it on a race that is already won is
                 // spending the last way out on nothing.
                 if (lock.withLock { active != null }) {
+                    // Said out loud, because silence here reads as a crash. A device log came
+                    // back with three minutes of traffic and not one line about the path being
+                    // investigated, and nothing in it distinguished "stood down, already won"
+                    // from "started and died without a word".
+                    log("${engine.label} stood down, the race was already won")
                     finished.send(null)
                     return@launch
                 }
