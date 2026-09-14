@@ -30,13 +30,15 @@ They're deliberately nothing alike on the wire. Whoever learns to spot one hasn'
 
 **The quic one** is UDP with the handshake obfuscated to random bytes, dialling public hysteria2 servers. One hop, it exits wherever that server sits, and it's the one that gets first refusal on every connect. It ships with a starting list inside the APK and tops that list up itself once something is up.
 
-**The edge one** speaks MASQUE over HTTP/3 to Cloudflare's own anycast edge. It carries no server list at all, which makes it the only one that can work on a fresh install, on an operator the app has never seen, or on a day when every list has gone stale. It has three gears — quick, then thorough with obfuscation and a split handshake, then tunnel-inside-tunnel — and it remembers which gear worked here.
+**The edge one** talks to Cloudflare's own anycast edge. It carries no server list at all, which makes it the only one that can work on a fresh install, on an operator the app has never seen, or on a day when every list has gone stale.
 
-If the tunnel ever falls onto it — because the quic path got throttled, say — the app moves back off it as soon as the better path is warm again. Reacting to failure isn't enough when the fallback isn't failing, it's just worse.
+It has four gears and it tries them in a fixed order. First a tunnel inside another tunnel, because that's the only gear that has ever been measured coming out in a different country. Then a plain single hop, which is up in about three seconds but comes out wherever you already are. Then two hops on the same carrier, for a network where the single hop can't get out at all. Then a full sweep of whole address ranges with the handshake split up, as the last resort. Whichever gear worked here is remembered, except that the first one always gets its turn anyway.
 
-It's deliberately held back six seconds at the start. It comes up in three or four seconds nearly every time, so left alone it won every race. It's meant to be the thing that always works, not the thing that always wins.
+Then it checks. Coming up is not the same as getting out, so once a gear that can land abroad reports a tunnel, the app asks the far side which country it's in. If the answer is the country you're already in, that tunnel gets thrown away and the gear is tried again, up to twice, before moving down. The single hop gears are never asked, because their answer is known in advance and re-rolling them would just waste your time.
 
-It tries a two-hop mode first, where a second tunnel runs inside the first one and you come out of the inner hop's address. That's what stops this path landing you back in the country you're already in, which is what it used to do on a single hop. If the two-hop mode can't get out, it falls back to the single-hop ladder it had before.
+If the tunnel ever falls onto this path, because the quic one got throttled say, the app moves back off it as soon as the better path is warm again. Reacting to failure isn't enough when the fallback isn't failing, it's just worse.
+
+It's deliberately held back six seconds at the start. It comes up fast enough that, left alone, it won every race. It's meant to be the thing that always works, not the thing that always wins.
 
 **Tor** is three hops of volunteer relays, reached through a pluggable transport. Slow, can't carry UDP, and gets through things nothing else does. It's the safety net, not the main road.
 
@@ -44,7 +46,7 @@ It tries a two-hop mode first, where a second tunnel runs inside the first one a
 
 Three separate programs that only take turns aren't worth much. These lean on each other.
 
-Tor bootstrapping to 100% and then carrying nothing is a real thing that happens — the bridge answers, the circuit builds, and the streams through it go nowhere. So when Tor comes up on its own and proves it's carrying nothing, and something else is already working, Tor is told to make its connections through that instead. Plain Tor, no bridges needed, because nobody on your network can see anything except the tunnel underneath anyway. Which route won is remembered per network, so you don't pay for the discovery twice.
+Tor bootstrapping to 100% and then carrying nothing is a real thing that happens. The bridge answers, the circuit builds, and the streams through it go nowhere. So when Tor comes up on its own and proves it's carrying nothing, and something else is already working, Tor is told to make its connections through that instead. Plain Tor, no bridges needed, because nobody on your network can see anything except the tunnel underneath anyway. Which route won is remembered per network, so you don't pay for the discovery twice.
 
 The server lists live exactly where they're blocked, so they're fetched through whatever tunnel is already up, never directly. Whichever path won this time is the one that goes and gets the servers the other path will dial next time.
 
@@ -52,11 +54,11 @@ Honest about the cost: Tor going out through another path stops being an indepen
 
 ## What used to be here
 
-There was a fourth path that dialled vless and trojan servers out of the big mixed public dumps. It's gone, and not on taste. Its search rounds came back with one or two live servers out of forty, over and over, on two different operators. Sitting behind a working tunnel as the reserve, it went quiet about once a minute and paid for a full forty-eight-port search each time — out of the connection you were actually using. The ranking, probing and scoring all worked fine. All of it was rearranging dead addresses.
+There was a fourth path that dialled vless and trojan servers out of the big mixed public dumps. It's gone, and not on taste. Its search rounds came back with one or two live servers out of forty, over and over, on two different operators. Sitting behind a working tunnel as the reserve, it went quiet about once a minute and paid for a full forty-eight-port search each time, out of the connection you were actually using. The ranking, probing and scoring all worked fine. All of it was rearranging dead addresses.
 
 Dropping it took a TLS core and a handshake shaper out of the build with it, so the APK got a lot smaller.
 
-The same measurement cut the server feeds down. Two of them were 3.5 MB between them and contributed not one server the small files didn't already have. What's left is three files, 82 KB, 166 distinct servers — cheap enough to refresh on a bad link without the refresh being the reason the link is bad.
+The same measurement cut the server feeds down. Two of them were 3.5 MB between them and contributed not one server the small files didn't already have. What's left is three files, 82 KB, 166 distinct servers. Cheap enough to refresh on a bad link without the refresh being the reason the link is bad.
 
 ## What it can't do
 
@@ -64,7 +66,7 @@ During a full shutdown all of it fails, because there's nothing left to fall bac
 
 Two of the three paths are UDP, so a network that throttles UDP hard leaves you on Tor.
 
-It won't change your apparent country reliably either. You come out wherever the path it managed to bring up happens to sit.
+You still don't get to pick a country. The app refuses an exit in the country you're sitting in when the path it's on can do something about that, but where you actually come out is wherever the tunnel it managed to build happens to sit. Some days that's Germany, some days it's Azerbaijan.
 
 ## Building
 
