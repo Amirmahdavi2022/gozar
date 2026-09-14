@@ -119,14 +119,14 @@ done
 # ⚖️ AGPL-3.0, while this app is MIT. It runs as its own process and speaks SOCKS over loopback,
 # so the two stay separate works and the app's licence is unaffected — but the binary's source
 # must be offered to anyone who receives the apk. NOTICE carries that offer. Do not link it in.
-AETHER_VERSION="v1.9.0"
+AETHER_VERSION="v2.0.0"
 
 # Checked by hand against the project's published SHA256SUMS.txt, then each archive was unpacked
 # and its ELF machine confirmed to match the ABI it claims. Any mismatch here stops the build.
 aether_sha=(
-  "a5a488b8cf05b3e83c28ca35cef78334130411c8df5314850e816b900e9d6cb9"
-  "d49ee19423a33d905fb4fef3f163d2e3c88e5223940e0f03dbe6324bb2c7dcdb"
-  "0c4dfcea54b5a39c0a3a52473d1fb9c2ff5c4ed92de5d240f84f18f54425f961"
+  "b4d34af711aeb5f7a1eec2dccfb8da5f6f405837077181a71ac48fcc0a6f064d"
+  "3afc7ee7e1be51eaf9a5fb8f9529a1fa1250fd79c20fa980272f391e1be7dba6"
+  "475f4e049ca270d589f5100f6d7f5092c614b83f07c3fa124abaaba71d9eaa5b"
 )
 aether_abi=("arm64" "armv7" "x86_64")
 
@@ -150,6 +150,11 @@ for i in "${!abis[@]}"; do
   rm -rf "$unpacked"; mkdir -p "$unpacked"
   tar xzf "$archive" -C "$unpacked"
   [ -f "$unpacked/aether" ] || { echo "No aether binary inside the $abi archive." >&2; exit 1; }
+
+  # From v2.0.0 the archive also carries pt/lyrebird, a pluggable transport for the core's own
+  # built-in tor. Deliberately not shipped: tor here is path 2, which has its own transports, and
+  # a second program would have to be placed in jniLibs to be executable at all on Android 10+.
+  # The core only looks for it when asked to use tor, which this app never does.
 
   cp "$unpacked/aether" "$output"
 

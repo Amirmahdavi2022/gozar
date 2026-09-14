@@ -9,7 +9,7 @@ whoever receives the apk, and this file is how those are met.
 
 **AGPL-3.0.** Source: <https://github.com/CluvexStudio/Aether>
 
-The exact build shipped here is release `v1.9.0`, taken unmodified from that project's published
+The exact build shipped here is release `v2.0.0`, taken unmodified from that project's published
 Android archives. The SHA-256 of each archive is pinned in `scripts/fetch-native.sh` and checked at
 build time, so the bytes in the apk can be matched against the ones the project published.
 

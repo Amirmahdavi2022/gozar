@@ -115,8 +115,17 @@ class EdgeEngine(
      */
     private val cache = File(context.filesDir, "edge").apply { mkdirs() }
 
-    /** Which rung worked last time. Survives restarts; it is one word in one file. */
-    private val memory = File(context.filesDir, "edge-mode")
+    /**
+     * Which rung worked last time. Survives restarts; it is one word in one file.
+     *
+     * 🚨 The name carries a version and it has to change whenever the ladder does. A phone that
+     * has been running this app already has a rung remembered here, and [ladder] puts the
+     * remembered one first — so a device upgrading into a new rung would have gone on happily
+     * using the old winner and never once tried it. Two releases have already been lost to
+     * exactly this shape of bug: code that only ever runs on an upgraded device, and so never
+     * runs anywhere it can be seen failing. Bumping the name costs one slower connect, once.
+     */
+    private val memory = File(context.filesDir, "edge-mode-2")
 
     @Volatile private var process: Process? = null
 
@@ -185,6 +194,25 @@ class EdgeEngine(
      * indistinguishable from a network that went silent.
      */
     private enum class Mode(val flags: List<String>, val windowMs: Long) {
+        /**
+         * 🚨 First on purpose, and the reason is the complaint that got this whole path held back.
+         *
+         * Every other rung here exits in the SAME country the phone is in, because the network
+         * behind them is location-preserving by design — which is why this path kept winning
+         * races with a tunnel that unblocked nothing. Masque-in-masque runs a second hop inside
+         * the first, on the same carrier, and the address you come out of is the inner hop's, not
+         * the outer one's. That is the one setting here that changes the answer to "where does
+         * this come out".
+         *
+         * It costs a second hop to build, so it is given a longer window than turbo and is tried
+         * first rather than fastest-first: a slower way out that lands abroad is worth more than
+         * a quick one that lands next door. If it fails, the ladder below is exactly what it was.
+         */
+        MIM(
+            listOf("--mim", "--balanced", "-4", "--quick-reconnect"),
+            45_000L,
+        ),
+
         /** First gateway that answers. Up in seconds when the network allows it. */
         TURBO(
             listOf("--masque", "--turbo", "-4", "--quick-reconnect"),

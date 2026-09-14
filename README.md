@@ -34,7 +34,9 @@ They're deliberately nothing alike on the wire. Whoever learns to spot one hasn'
 
 If the tunnel ever falls onto it — because the quic path got throttled, say — the app moves back off it as soon as the better path is warm again. Reacting to failure isn't enough when the fallback isn't failing, it's just worse.
 
-It's deliberately held back six seconds at the start. It comes up in three or four seconds nearly every time, so left alone it won every race — and what it wins with is a tunnel that comes out in the same country your phone is in, because that network is location-preserving by design. It's meant to be the thing that always works, not the thing that always wins.
+It's deliberately held back six seconds at the start. It comes up in three or four seconds nearly every time, so left alone it won every race. It's meant to be the thing that always works, not the thing that always wins.
+
+It tries a two-hop mode first, where a second tunnel runs inside the first one and you come out of the inner hop's address. That's what stops this path landing you back in the country you're already in, which is what it used to do on a single hop. If the two-hop mode can't get out, it falls back to the single-hop ladder it had before.
 
 **Tor** is three hops of volunteer relays, reached through a pluggable transport. Slow, can't carry UDP, and gets through things nothing else does. It's the safety net, not the main road.
 
