@@ -91,7 +91,7 @@ class EdgeEngine(
      * 🚨 It must stay larger than the rungs added together, and that is a real constraint rather
      * than a margin: the ladder is cut off wherever this expires, so a rung whose window falls
      * past it can never run at all, on any network, and nothing says so. The windows below come
-     * to 225 seconds. Change one and change this.
+     * to 210 seconds. Change one and change this.
      */
     override val deadlineMs: Long = 240_000L
 
@@ -262,13 +262,19 @@ class EdgeEngine(
          * a quick one that lands next door. If it fails, the ladder below is exactly what it was.
          */
         MIM(
-            listOf("--mim", "--balanced", "-4", "--quick-reconnect"),
-            // 🚨 Seventy-five, because forty-five was measured and it was not enough: the rung
-            // timed out twice on the owner's own network without the program ever complaining,
-            // which is what a half-built second hop looks like from out here. Two hops means
-            // registering, sweeping for the outer gateway, building it, and only then doing the
-            // inner one through it — every step of a single-hop connect, twice, in series.
-            75_000L,
+            // 🚨 The quick sweep, not the balanced one, and this was measured rather than chosen.
+            // With the balanced sweep this rung died on the core's own "scan deadline reached"
+            // after two minutes — and then the very next rung, on the same network seconds later,
+            // found a gateway in four seconds with the quick sweep. The gateway was never the
+            // problem; the way of looking for it was. A sweep the network will not sit still for
+            // is worth nothing twice over here, because this rung has to do it before it can even
+            // start on the hop that matters.
+            listOf("--mim", "--turbo", "-4", "--quick-reconnect"),
+            // Two hops means registering, sweeping, building the outer one, and only then doing
+            // the inner one through it: every step of a single-hop connect, twice, in series. Sixty
+            // against a quick sweep that takes four, so the second hop has room and a failure is
+            // still something you can sit through.
+            60_000L,
             described = "two hops",
         ),
 
@@ -363,11 +369,25 @@ class EdgeEngine(
         val deadline = System.currentTimeMillis() + mode.windowMs
         val reader = started.inputStream.bufferedReader()
 
+        // 🚨 Without this the window is a suggestion. The drain below checks the clock once per
+        // line, so a core that goes quiet is never cut off at all — it is cut off whenever it
+        // next feels like speaking. A rung with a seventy-five second window was measured running
+        // for a hundred and twenty-six, and it ended when the core gave up on itself rather than
+        // when we did. Killing the process is what makes the read return.
+        val watchdog = Thread {
+            runCatching {
+                val left = deadline - System.currentTimeMillis()
+                if (left > 0) Thread.sleep(left)
+                if (process === started && started.isAlive) started.destroy()
+            }
+        }.apply { isDaemon = true }.also { it.start() }
+
         // 🚨 The output has to be drained whatever happens. A process whose pipe fills up blocks on
         // its next write and stops making progress, and from out here that is indistinguishable
         // from a network that went quiet — the tunnel would simply never come up, with no error
         // anywhere to say why.
         val ready = drainUntilReady(reader, deadline)
+        watchdog.interrupt()
 
         if (!ready) {
             val reason = lastWords.ifBlank {
