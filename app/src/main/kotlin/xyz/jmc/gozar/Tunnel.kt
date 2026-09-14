@@ -271,8 +271,34 @@ object Tunnel {
         )
     }
 
-    private fun racer(context: Context, engines: List<Engine>): Racer =
-        racer ?: Racer(
+    /**
+     * The racer for this engine list, rebuilt if the list is not the one it was made from.
+     *
+     * 🚨 This is the defect that made the per-path switches do nothing at all, and it is worth
+     * spelling out because it hid so well. [Tunnel] is an object, so it lives as long as the
+     * process, and the racer it made on the first connect was reused on every connect after it —
+     * with the engine list it captured that first time. Turning a path off in settings and
+     * pressing connect therefore raced exactly the same three engines as before, and the log
+     * looked identical, because it was identical. The device log even said so out loud: "tor has
+     * already had its turn this run" across two separate connects is a process that never died.
+     *
+     * A racer is still kept between connects — it holds live processes, a warm standby and the
+     * scoreboard, and throwing that away every time would undo the reserve. It is replaced only
+     * when the lineup it was built from is no longer the lineup being asked for.
+     */
+    private suspend fun racer(context: Context, engines: List<Engine>): Racer {
+        val existing = racer
+        if (existing != null && existing.lineup == engines.map { it.name }) return existing
+        if (existing != null) {
+            note("the set of paths changed, starting the race over")
+            existing.stop()
+            racer = null
+        }
+        return build(context, engines)
+    }
+
+    private fun build(context: Context, engines: List<Engine>): Racer =
+        Racer(
             engines = engines,
             board = Scoreboard(FileScoreStore(File(context.filesDir, "scoreboard.json")))
                 .also { board = it },

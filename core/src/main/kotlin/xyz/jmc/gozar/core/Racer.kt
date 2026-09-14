@@ -59,6 +59,16 @@ class Racer(
     private var refiller: Job? = null
     private var stopping = false
 
+    /**
+     * The engines this racer was built with, in order.
+     *
+     * Exposed so the caller can notice that the set it wants is no longer the set this was made
+     * from. A racer holds live processes and a scoreboard, so it is kept between connects rather
+     * than rebuilt — which means the list it captured outlives any change to that list unless
+     * somebody checks.
+     */
+    val lineup: List<String> get() = engines.map { it.name }
+
     /** How many times this session has moved off a fallback. See [preferBetter]. */
     @Volatile private var swapsOffFallback = 0
 
