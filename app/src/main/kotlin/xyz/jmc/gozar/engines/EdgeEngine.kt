@@ -91,9 +91,9 @@ class EdgeEngine(
      * 🚨 It must stay larger than the rungs added together, and that is a real constraint rather
      * than a margin: the ladder is cut off wherever this expires, so a rung whose window falls
      * past it can never run at all, on any network, and nothing says so. The windows below come
-     * to 210 seconds. Change one and change this.
+     * to 210 seconds, plus each rung's port allowance on top. Change one and change this.
      */
-    override val deadlineMs: Long = 240_000L
+    override val deadlineMs: Long = 300_000L
 
     /**
      * 🚨 Held back on purpose, and it is the difference between the app being usable and not.
@@ -152,6 +152,14 @@ class EdgeEngine(
     /** The last thing it said before a rung ran out of time without ever complaining. */
     @Volatile private var furthest: String = ""
 
+    /**
+     * How long the winning rung took to open its port, printed with the win.
+     *
+     * Kept because the allowance that broke the two-hop rung was picked without one of these ever
+     * having been measured. The next person to change it should be reading a number, not guessing.
+     */
+    @Volatile private var lastOpenMs: Long = -1
+
     override suspend fun start(): Session = withContext(Dispatchers.IO) {
         check(binary.isFile && binary.canExecute()) { "no edge program in this build" }
 
@@ -168,7 +176,7 @@ class EdgeEngine(
                 if (run(mode)) {
                     // Named, because "up on path 4" was true for four builds running and told
                     // nobody which of four very different rungs had actually carried it.
-                    log("path 4 is out via ${mode.described}")
+                    log("path 4 is out via ${mode.described}, port open in ${lastOpenMs}ms")
                     remember(mode)
                     return@withContext Session(PORT, name, shape)
                 }
@@ -194,7 +202,7 @@ class EdgeEngine(
             for (mode in ladder()) {
                 stop()
                 if (run(mode)) {
-                    log("path 4 is back via ${mode.described}")
+                    log("path 4 is back via ${mode.described}, port open in ${lastOpenMs}ms")
                     remember(mode)
                     return@withContext true
                 }
@@ -246,6 +254,16 @@ class EdgeEngine(
         val windowMs: Long,
         /** What to call this rung in the log, where "MIM" would mean nothing to a reader. */
         val described: String,
+        /**
+         * How long to let the program open its local port after it says the tunnel is good.
+         *
+         * 🚨 Per rung, because one number for all of them threw away a working tunnel. Four
+         * seconds was measured as plenty for a single hop and was quietly applied to the two-hop
+         * rung as well — which validated its tunnel in thirteen seconds, was given four to start
+         * listening, missed, and was killed and written off as a failure. The rung worked. The
+         * allowance did not.
+         */
+        val portWaitMs: Long = 8_000L,
     ) {
         /**
          * 🚨 First on purpose, and the reason is the complaint that got this whole path held back.
@@ -276,6 +294,11 @@ class EdgeEngine(
             // still something you can sit through.
             60_000L,
             described = "two hops",
+            // The inner hop is built after the outer one reports good, so the listener comes up
+            // noticeably later here than on any single-hop rung. Generous on purpose: the wait
+            // ends the moment the port answers, so a large ceiling costs nothing when it is fast
+            // and costs everything when it is too small.
+            portWaitMs = 25_000L,
         ),
 
         /** First gateway that answers. Up in seconds when the network allows it. */
@@ -398,8 +421,10 @@ class EdgeEngine(
             return false
         }
 
-        if (!waitForPort()) {
-            log("$label validated a tunnel and the port never opened")
+        val opened = waitForPort(mode.portWaitMs)
+        lastOpenMs = opened
+        if (opened < 0) {
+            log("$label validated a tunnel and the port never opened in ${mode.portWaitMs / 1000}s")
             stop()
             return false
         }
@@ -443,19 +468,21 @@ class EdgeEngine(
         return false
     }
 
-    private fun waitForPort(): Boolean {
-        val deadline = System.currentTimeMillis() + PORT_WAIT_MS
+    /** @return how long the port took to answer, or -1 if it never did. */
+    private fun waitForPort(allowanceMs: Long): Long {
+        val began = System.currentTimeMillis()
+        val deadline = began + allowanceMs
         while (System.currentTimeMillis() < deadline) {
-            if (process == null) return false
+            if (process == null) return -1
             Socket().use { probe ->
                 runCatching {
                     probe.connect(InetSocketAddress(LOOPBACK, PORT), 300)
-                    return true
+                    return System.currentTimeMillis() - began
                 }
             }
-            runCatching { Thread.sleep(50) }.onFailure { return false }
+            runCatching { Thread.sleep(50) }.onFailure { return -1 }
         }
-        return false
+        return -1
     }
 
     companion object {
@@ -484,7 +511,6 @@ class EdgeEngine(
         private const val FAILURE = "Error:"
 
         private const val MAX_REASON = 160
-        private const val PORT_WAIT_MS = 4_000L
 
         /** Grace for the kernel to release the listener after the child is gone. */
         private const val PORT_FREE_WAIT_MS = 3_000L
