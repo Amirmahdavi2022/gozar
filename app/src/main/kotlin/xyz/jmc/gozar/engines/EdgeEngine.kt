@@ -6,9 +6,11 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import xyz.jmc.gozar.core.Engine
+import xyz.jmc.gozar.core.ExitGate
 import xyz.jmc.gozar.core.Redact
 import xyz.jmc.gozar.core.Session
 import xyz.jmc.gozar.core.Shape
+import xyz.jmc.gozar.direct.ExitLocation
 import java.io.BufferedReader
 import java.io.File
 import java.net.InetSocketAddress
@@ -90,10 +92,13 @@ class EdgeEngine(
      *
      * 🚨 It must stay larger than the rungs added together, and that is a real constraint rather
      * than a margin: the ladder is cut off wherever this expires, so a rung whose window falls
-     * past it can never run at all, on any network, and nothing says so. The windows below come
-     * to 300 seconds, plus each rung's port allowance on top. Change one and change this.
+     * past it can never run at all, on any network, and nothing says so. The four rungs cost 300
+     * seconds of window plus 32 of port allowance, and the exit gate may throw one of the two-hop
+     * rungs away and pay for it again — so there is roughly a minute and a half of slack on top
+     * for that. The gate will not start a re-roll it cannot finish inside this, which is what
+     * stops it eating the rungs underneath it. Change a window and change this.
      */
-    override val deadlineMs: Long = 360_000L
+    override val deadlineMs: Long = 420_000L
 
     /**
      * 🚨 Held back on purpose, and it is the difference between the app being usable and not.
@@ -132,7 +137,7 @@ class EdgeEngine(
      * exactly this shape of bug: code that only ever runs on an upgraded device, and so never
      * runs anywhere it can be seen failing. Bumping the name costs one slower connect, once.
      */
-    private val memory = File(context.filesDir, "edge-mode-2")
+    private val memory = File(context.filesDir, "edge-mode-3")
 
     /** Held for the whole walk down the rungs. See the note in [start]. */
     private val ladderLock = Mutex()
@@ -171,16 +176,7 @@ class EdgeEngine(
         // "Address already in use" — so the whole ladder below the first rung was wiped out, and
         // the message said nothing about there being two of us.
         ladderLock.withLock {
-            for (mode in ladder()) {
-                stop()
-                if (run(mode)) {
-                    // Named, because "up on path 4" was true for four builds running and told
-                    // nobody which of four very different rungs had actually carried it.
-                    log("path 4 is out via ${mode.described}, port open in ${lastOpenMs}ms")
-                    remember(mode)
-                    return@withContext Session(PORT, name, shape)
-                }
-            }
+            if (walk("is out")) return@withContext Session(PORT, name, shape)
             stop()
         }
         error(lastWords.ifBlank { "no edge gateway answered" })
@@ -199,14 +195,7 @@ class EdgeEngine(
         // going back to it first would spend the cheap recovery on the one rung known to be
         // failing right now.
         ladderLock.withLock {
-            for (mode in ladder()) {
-                stop()
-                if (run(mode)) {
-                    log("path 4 is back via ${mode.described}, port open in ${lastOpenMs}ms")
-                    remember(mode)
-                    return@withContext true
-                }
-            }
+            if (walk("is back")) return@withContext true
             stop()
         }
         false
@@ -275,6 +264,15 @@ class EdgeEngine(
          * killing it for not having opened a port it had not reached the code to open yet.
          */
         val readyMarker: String = READY,
+        /**
+         * Whether this rung can come out anywhere other than where the phone is.
+         *
+         * False for both single hops, and that is a property of the network rather than a
+         * limitation of the flags: it is location preserving by design, and there is no setting
+         * anywhere that changes it. Only the two rungs that build a second hop get asked where
+         * they landed, because only they can give a different answer next time.
+         */
+        val changesCountry: Boolean = false,
     ) {
         /**
          * 🚨 First on purpose, and the reason is the complaint that got this whole path held back.
@@ -298,7 +296,23 @@ class EdgeEngine(
             // problem; the way of looking for it was. A sweep the network will not sit still for
             // is worth nothing twice over here, because this rung has to do it before it can even
             // start on the hop that matters.
-            listOf("--mim", "--turbo", "-4", "--quick-reconnect"),
+            // 🚨 --h2 is on this rung deliberately, and it is the fix for the failure the last
+            // four builds were spent on. Read in the core's own source: over HTTP/3 the inner hop
+            // is forwarded as UDP datagrams inside the outer tunnel, and its datagram budget comes
+            // out as the outer tunnel's whole MTU minus the packet headers — 1252 bytes inside
+            // 1280. That is not tight, it is exact, and the core warns about this very case in
+            // its own code with the words "raise the mtu or use --h2 for both hops". A device log
+            // showed it landing on exactly those numbers, printing the inner transport line, and
+            // then never finishing the inner handshake, on every attempt, twice in a row.
+            //
+            // With HTTP/2 the inner hop rides a TCP forwarder instead, so there is no datagram
+            // ceiling to sit on, and the outer tunnel's own MTU goes up as well. Two further
+            // reasons to trust this over the theory: the core's gateway scan is transport-aware,
+            // so the sweep looks for edges that serve h2 rather than finding h3 ones and failing
+            // later; and the reference client that ships this core moved its own default off
+            // HTTP/3 for ordinary connections, saying in its source that h3 gateway discovery
+            // fails on networks where h2 reaches the same edges.
+            listOf("--mim", "--h2", "--turbo", "-4", "--quick-reconnect"),
             // 🚨 Sized from the core's source rather than guessed at, which is what the last four
             // numbers here were. After the outer hop is up the inner hunt alone can take six
             // candidates at twelve seconds each — seventy two seconds in which the rung is
@@ -308,6 +322,29 @@ class EdgeEngine(
             // Printed immediately after the socks listener is bound, so by the time this is seen
             // the port is already open and the default allowance below is ample.
             readyMarker = "masque-in-masque ready",
+            changesCountry = true,
+        ),
+
+        /**
+         * One tunnel inside another.
+         *
+         * 🚨 Moved above both single hops, and this is the same mistake as the one that kept the
+         * two-hop rung from ever running, one rung further down. It sat last, behind a rung that
+         * comes up in three seconds on almost any network — so on a real phone it was never once
+         * reached, and every device log ended the same way: up quickly, out at home. It is one of
+         * only two rungs here whose exit is not decided by where the phone is, and the people who
+         * wrote this core treat it as the ordinary way to connect rather than a last resort.
+         *
+         * The quick sweep rather than the full one, for the same reason the rung above uses it:
+         * a sweep this network will not sit still for is worth nothing, and the full one was
+         * measured dying on the core's own scan deadline while the quick one found a gateway in
+         * four seconds on the same network seconds later.
+         */
+        GOOL(
+            listOf("--gool", "--turbo", "-4", "--quick-reconnect", "--noize", "gfw"),
+            60_000L,
+            described = "tunnel in tunnel",
+            changesCountry = true,
         ),
 
         /** First gateway that answers. Up in seconds when the network allows it. */
@@ -330,13 +367,10 @@ class EdgeEngine(
             60_000L,
             described = "one hop, full sweep",
         ),
+        ;
 
-        /** One tunnel inside another, for equipment that reads the outer one. */
-        GOOL(
-            listOf("--gool", "--thorough", "-4", "--no-quick-reconnect", "--noize", "gfw"),
-            60_000L,
-            described = "tunnel in tunnel",
-        ),
+        /** What one attempt at this rung costs, window and port allowance together. */
+        val costMs: Long get() = windowMs + portWaitMs
     }
 
     /**
@@ -365,6 +399,92 @@ class EdgeEngine(
     private fun remember(mode: Mode) {
         runCatching { memory.writeText(mode.name) }
     }
+
+    /**
+     * Steps down the rungs until one of them is both up AND coming out somewhere useful.
+     *
+     * 🚨 The second half of that sentence is new and it is the whole point of this function. Every
+     * earlier build stopped at the first rung that came up, which sounds right and was not: the
+     * rung that comes up first is almost always the single hop, and a single hop through this
+     * network comes out in the same country the phone is in. So the app connected, quickly and
+     * reliably, to a tunnel that unblocked nothing — and the log said "up on path 4" and looked
+     * like a success. Coming up is not the same as getting out.
+     *
+     * Each rung that can land abroad is asked where it landed, and a home answer throws the tunnel
+     * away and tries again, exactly as the core's own reference client does. The single hop rungs
+     * are never asked, because their answer is known in advance and re-rolling them is pure delay.
+     *
+     * 🚨 Everything here runs against one wall clock. A rung whose window does not fit in what is
+     * left is skipped and SAID to be skipped, because the alternative is what has bitten this file
+     * twice already — a rung that can never run on any real network, with nothing anywhere saying
+     * why it never appears in a log.
+     *
+     * @param verb how to describe the win, since this serves a first connect and a recovery
+     * @return true when a tunnel is up and kept
+     */
+    private fun walk(verb: String): Boolean {
+        val deadline = System.currentTimeMillis() + deadlineMs
+        for (mode in ladder()) {
+            var rerolls = 0
+            while (true) {
+                val left = deadline - System.currentTimeMillis()
+                if (left < mode.costMs) {
+                    log("$label skipped the ${mode.described} route, not enough time left for it")
+                    break
+                }
+
+                stop()
+                if (!run(mode)) break
+
+                val place = if (mode.changesCountry) lookUpExit() else null
+                val decision = ExitGate.decide(
+                    canChangeCountry = mode.changesCountry,
+                    code = place?.code,
+                    rerollsUsed = rerolls,
+                    msLeft = deadline - System.currentTimeMillis(),
+                    rerollCostMs = mode.costMs,
+                )
+
+                when (decision) {
+                    ExitGate.Decision.ACCEPT -> {
+                        // Named, because "up on path 4" was true for four builds running and told
+                        // nobody which of four very different rungs had actually carried it — and
+                        // the country is here for the same reason, since that is the question this
+                        // path was held back for in the first place.
+                        val where = place?.country?.takeIf { it.isNotBlank() }
+                        log(
+                            "path 4 $verb via ${mode.described}" +
+                                (if (where != null) ", coming out in $where" else "") +
+                                ", port open in ${lastOpenMs}ms",
+                        )
+                        remember(mode)
+                        return true
+                    }
+
+                    ExitGate.Decision.REROLL -> {
+                        rerolls++
+                        log("$label came out at home on the ${mode.described} route; rolling again")
+                    }
+
+                    ExitGate.Decision.NEXT_RUNG -> {
+                        log("$label kept coming out at home on the ${mode.described} route; moving on")
+                        break
+                    }
+                }
+            }
+        }
+        return false
+    }
+
+    /**
+     * Asks the far side of the tunnel which country it thinks this is, through the tunnel itself.
+     *
+     * Deliberately short: this runs while a person is watching a connect spinner, and a lookup
+     * that cannot answer in a few seconds is treated as no answer, which [ExitGate] reads as
+     * "keep the tunnel". Never judging is safer here than judging slowly.
+     */
+    private fun lookUpExit(): ExitLocation.Place? =
+        runCatching { ExitLocation.lookup(LOOPBACK, PORT, EXIT_LOOKUP_MS) }.getOrNull()
 
     /**
      * Starts one rung and waits for the program to say it has a working tunnel.
@@ -514,6 +634,14 @@ class EdgeEngine(
          * between knowing and hoping. Both transports share this wording.
          */
         private const val READY = "tunnel validated (end-to-end data confirmed)"
+
+        /**
+         * How long the exit-country question gets, asked through the tunnel being judged.
+         *
+         * Short on purpose: somebody is watching a spinner while this runs, and an answer that
+         * does not arrive is treated as no answer and keeps the tunnel. See [ExitGate].
+         */
+        private const val EXIT_LOOKUP_MS = 6_000
 
         /** How the program marks a warning and an outright failure, respectively. */
         private const val TROUBLE = "[!]"
