@@ -92,10 +92,9 @@ class EdgeEngine(
      *
      * 🚨 It must stay larger than the rungs added together, and that is a real constraint rather
      * than a margin: the ladder is cut off wherever this expires, so a rung whose window falls
-     * past it can never run at all, on any network, and nothing says so. The four rungs cost 300
-     * seconds of window plus 32 of port allowance, and the exit gate may throw one of the two-hop
-     * rungs away and pay for it again — so there is roughly a minute and a half of slack on top
-     * for that. The gate will not start a re-roll it cannot finish inside this, which is what
+     * past it can never run at all, on any network, and nothing says so. The four rungs cost 240
+     * seconds of window plus 32 of port allowance, and the exit gate may throw the first rung
+     * away and pay for it again twice — 136 seconds — which is what the rest of this is for. The gate will not start a re-roll it cannot finish inside this, which is what
      * stops it eating the rungs underneath it. Change a window and change this.
      */
     override val deadlineMs: Long = 420_000L
@@ -137,7 +136,7 @@ class EdgeEngine(
      * exactly this shape of bug: code that only ever runs on an upgraded device, and so never
      * runs anywhere it can be seen failing. Bumping the name costs one slower connect, once.
      */
-    private val memory = File(context.filesDir, "edge-mode-3")
+    private val memory = File(context.filesDir, "edge-mode-4")
 
     /** Held for the whole walk down the rungs. See the note in [start]. */
     private val ladderLock = Mutex()
@@ -288,6 +287,36 @@ class EdgeEngine(
          * first rather than fastest-first: a slower way out that lands abroad is worth more than
          * a quick one that lands next door. If it fails, the ladder below is exactly what it was.
          */
+        /**
+         * One tunnel inside another.
+         *
+         * 🚨 First, and it is the only rung here that has ever been measured coming out somewhere
+         * other than home: Germany and Azerbaijan on two consecutive attempts on the owner's own
+         * phone. For a whole release it sat LAST, behind a rung that comes up in three seconds on
+         * almost any network, so it was never once reached — and every device log ended the same
+         * way, up quickly and out at home, with nothing saying which rung had done it. The people
+         * who wrote this core treat it as the ordinary way to connect rather than a last resort,
+         * which should have been the clue.
+         *
+         * The quick sweep rather than the full one, for the same reason the rung above uses it:
+         * a sweep this network will not sit still for is worth nothing, and the full one was
+         * measured dying on the core's own scan deadline while the quick one found a gateway in
+         * four seconds on the same network seconds later.
+         */
+        GOOL(
+            listOf("--gool", "--turbo", "-4", "--quick-reconnect", "--noize", "gfw"),
+            60_000L,
+            described = "tunnel in tunnel",
+            changesCountry = true,
+        ),
+
+        /** First gateway that answers. Up in seconds when the network allows it. */
+        TURBO(
+            listOf("--masque", "--turbo", "-4", "--quick-reconnect"),
+            30_000L,
+            described = "one hop, quick sweep",
+        ),
+
         MIM(
             // 🚨 The quick sweep, not the balanced one, and this was measured rather than chosen.
             // With the balanced sweep this rung died on the core's own "scan deadline reached"
@@ -317,41 +346,11 @@ class EdgeEngine(
             // numbers here were. After the outer hop is up the inner hunt alone can take six
             // candidates at twelve seconds each — seventy two seconds in which the rung is
             // working and silent — and the scan and the outer hop come before any of that.
-            150_000L,
+            90_000L,
             described = "two hops",
             // Printed immediately after the socks listener is bound, so by the time this is seen
             // the port is already open and the default allowance below is ample.
             readyMarker = "masque-in-masque ready",
-            changesCountry = true,
-        ),
-
-        /**
-         * One tunnel inside another.
-         *
-         * 🚨 Moved above both single hops, and this is the same mistake as the one that kept the
-         * two-hop rung from ever running, one rung further down. It sat last, behind a rung that
-         * comes up in three seconds on almost any network — so on a real phone it was never once
-         * reached, and every device log ended the same way: up quickly, out at home. It is one of
-         * only two rungs here whose exit is not decided by where the phone is, and the people who
-         * wrote this core treat it as the ordinary way to connect rather than a last resort.
-         *
-         * The quick sweep rather than the full one, for the same reason the rung above uses it:
-         * a sweep this network will not sit still for is worth nothing, and the full one was
-         * measured dying on the core's own scan deadline while the quick one found a gateway in
-         * four seconds on the same network seconds later.
-         */
-        GOOL(
-            listOf("--gool", "--turbo", "-4", "--quick-reconnect", "--noize", "gfw"),
-            60_000L,
-            described = "tunnel in tunnel",
-            changesCountry = true,
-        ),
-
-        /** First gateway that answers. Up in seconds when the network allows it. */
-        TURBO(
-            listOf("--masque", "--turbo", "-4", "--quick-reconnect"),
-            30_000L,
-            described = "one hop, quick sweep",
         ),
 
         /**
@@ -374,26 +373,27 @@ class EdgeEngine(
     }
 
     /**
-     * The rungs to try, in order: the two-hop one, then the remembered winner, then the rest.
+     * The rungs to try, in order: the one that lands abroad, then the remembered winner, then
+     * the rest.
      *
-     * 🚨 [MIM] is pinned to the front and the memory is never allowed to move it, and that is the
-     * whole point of this function. The memory exists to make the next connect faster by starting
-     * at whatever worked last time — which is right for every rung here except one. MIM is not a
-     * faster way to the same place, it is the only rung that changes which country the tunnel
-     * comes out of; a single-hop rung beating it on speed is exactly what it is supposed to lose
-     * to on merit and win against on purpose.
+     * 🚨 [GOOL] is pinned to the front and the memory is never allowed to move it, and that is
+     * the whole point of this function. The memory exists to make the next connect faster by
+     * starting at whatever worked last time — which is right for every rung here except one.
+     * GOOL is not a faster way to the same place, it is the only rung measured changing which
+     * country the tunnel comes out of; a single-hop rung beating it on speed is exactly what it
+     * is supposed to lose to on merit and win against on purpose.
      *
-     * This cost four builds to find. MIM failed once, the next rung succeeded and was written
-     * down as the winner, and from then on it was tried first, came up in under four seconds, and
-     * MIM was never executed again on that device — so every later change to it shipped, ran, and
+     * This cost four builds to find, with a different rung in this position. It failed once, the
+     * next rung succeeded and was written down as the winner, and from then on that one was tried
+     * first, came up in under four seconds, and the pinned rung was never executed again — so every later change to it shipped, ran, and
      * did nothing, while the log said only "up on path 4" and named no rung at all. The exit
      * stayed in the country it had always been in, and nothing anywhere said why.
      */
     private fun ladder(): List<Mode> {
-        val rest = Mode.entries.filter { it != Mode.MIM }
+        val rest = Mode.entries.filter { it != Mode.GOOL }
         val remembered = runCatching { memory.readText().trim() }.getOrNull()
         val first = rest.firstOrNull { it.name == remembered } ?: return Mode.entries
-        return listOf(Mode.MIM, first) + rest.filter { it != first }
+        return listOf(Mode.GOOL, first) + rest.filter { it != first }
     }
 
     private fun remember(mode: Mode) {
