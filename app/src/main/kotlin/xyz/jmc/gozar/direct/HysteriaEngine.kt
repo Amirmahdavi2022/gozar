@@ -4,6 +4,7 @@ import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import xyz.jmc.gozar.core.Engine
+import xyz.jmc.gozar.core.Noise
 import xyz.jmc.gozar.core.Session
 import xyz.jmc.gozar.core.Shape
 import java.io.BufferedReader
@@ -64,6 +65,13 @@ internal class HysteriaEngine(
         get() = candidates(store.load(), 1).isEmpty()
 
     private val running = java.util.concurrent.ConcurrentHashMap<Int, Process>()
+
+    /**
+     * Shared by every core this engine starts, deliberately. A probe round runs several at once
+     * and they all complain about the same unhelpful network; one counter across them reads as
+     * one sentence rather than six competing tallies.
+     */
+    private val noise = Noise()
     private var pool: EndpointPool = EndpointPool()
 
     /** Proven endpoints held back for [recover], exactly as path one does. */
@@ -289,13 +297,16 @@ internal class HysteriaEngine(
                 BufferedReader(InputStreamReader(started.inputStream, StandardCharsets.UTF_8)).use { lines ->
                     while (true) {
                         val line = lines.readLine() ?: break
-                        // Only the interesting ones. This client narrates every connection it
-                        // opens, and at one line per socket the diary would be unreadable and
-                        // would carry the addresses that are deliberately kept out of it.
+                        // Only the interesting ones, and the routine ones counted rather than
+                        // printed. This client narrates every connection it opens, and at one
+                        // line per socket the diary was unreadable — see [Noise].
                         if (line.contains("error", true) || line.contains("fail", true)) {
-                            log("quic core: ${line.take(200)}")
+                            noise.consume(line, System.currentTimeMillis())?.let(log)
                         }
                     }
+                    // Whatever is still counted when the core's output ends, so a tally is never
+                    // lost to a process that stopped mid-window.
+                    noise.flush(System.currentTimeMillis())?.let(log)
                 }
             }
         }, "quic-output").apply { isDaemon = true }.start()
